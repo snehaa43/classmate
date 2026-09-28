@@ -7,18 +7,31 @@ import {
   AlertCircle,
   Sun,
   Moon,
-  FileCheck
+  FileCheck,
+  Server,
+  Loader2
 } from 'lucide-react';
+
+const MAX_FILE_SIZE_MB = 50;
+const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
+
+interface ServerFileResponse {
+  name: string;
+  sizeBytes: number;
+  sizeFormatted: string;
+  type: string;
+  uploadedAt: string;
+}
 
 export default function HomePage() {
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
   const [isDragging, setIsDragging] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ active: boolean; name: string; percent: number }>({
-    active: false,
-    name: '',
-    percent: 0
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ percent: number; statusText: string }>({
+    percent: 0,
+    statusText: ''
   });
-  const [uploadedFile, setUploadedFile] = useState<{ name: string; size: string } | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<ServerFileResponse | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -40,38 +53,85 @@ export default function HomePage() {
 
   const showToast = (message: string, type: 'success' | 'info' | 'error' = 'info') => {
     setToast({ message, type });
-    setTimeout(() => setToast(null), 3500);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const uploadPdfToServer = async (file: File) => {
+    // 1. Client-Side File Type Validation
+    const isPdfExt = file.name.toLowerCase().endsWith('.pdf');
+    const isPdfMime = file.type === 'application/pdf' || file.type === '';
+    if (!isPdfExt && !isPdfMime) {
+      showToast('Validation Error: Only PDF files (.pdf) are allowed.', 'error');
+      return;
+    }
+
+    // 2. Client-Side File Size Validation
+    if (file.size === 0) {
+      showToast('Validation Error: The selected file is empty (0 bytes).', 'error');
+      return;
+    }
+
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      showToast(`Validation Error: File size (${sizeMb} MB) exceeds maximum allowed ${MAX_FILE_SIZE_MB} MB limit.`, 'error');
+      return;
+    }
+
+    // 3. Prepare FormData payload
+    const formData = new FormData();
+    formData.append('file', file);
+
+    setIsUploading(true);
+    setUploadProgress({ percent: 10, statusText: 'Connecting to backend server...' });
+
+    try {
+      // Use XMLHttpRequest to track real upload progress
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/api/upload', true);
+
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          const percent = Math.round((event.loaded / event.total) * 85);
+          setUploadProgress({
+            percent,
+            statusText: `Uploading ${percent}% to backend...`
+          });
+        }
+      };
+
+      xhr.onload = () => {
+        setIsUploading(false);
+        try {
+          const response = JSON.parse(xhr.responseText);
+
+          if (xhr.status >= 200 && xhr.status < 300 && response.success) {
+            setUploadProgress({ percent: 100, statusText: 'Validated & Verified!' });
+            setUploadedFile(response.file);
+            showToast(response.message || `PDF "${file.name}" received by backend!`, 'success');
+          } else {
+            const errorMsg = response.error || `Server responded with status ${xhr.status}`;
+            showToast(`Backend Validation Failed: ${errorMsg}`, 'error');
+          }
+        } catch {
+          showToast(`Server Error: Unexpected response format (Status ${xhr.status})`, 'error');
+        }
+      };
+
+      xhr.onerror = () => {
+        setIsUploading(false);
+        showToast('Network Error: Failed to reach backend server endpoint.', 'error');
+      };
+
+      xhr.send(formData);
+    } catch (err: any) {
+      setIsUploading(false);
+      showToast(`Upload Error: ${err.message || 'Something went wrong'}`, 'error');
+    }
   };
 
   const handleFiles = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const file = files[0];
-
-    if (!file.name.toLowerCase().endsWith('.pdf')) {
-      showToast('Please upload a valid PDF document (.pdf)', 'error');
-      return;
-    }
-
-    const fileSizeStr = file.size > 1024 * 1024
-      ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
-      : `${Math.round(file.size / 1024)} KB`;
-
-    setUploadProgress({ active: true, name: file.name, percent: 15 });
-
-    let current = 15;
-    const interval = setInterval(() => {
-      current += 20;
-      if (current >= 95) {
-        clearInterval(interval);
-        setTimeout(() => {
-          setUploadedFile({ name: file.name, size: fileSizeStr });
-          setUploadProgress({ active: false, name: '', percent: 0 });
-          showToast(`Uploaded ${file.name} successfully`, 'success');
-        }, 400);
-      } else {
-        setUploadProgress({ active: true, name: file.name, percent: current });
-      }
-    }, 180);
+    uploadPdfToServer(files[0]);
   };
 
   return (
@@ -85,6 +145,10 @@ export default function HomePage() {
           </div>
 
           <div className="header-actions">
+            <div className="server-badge">
+              <Server size={12} />
+              <span>Backend Ready (/api/upload)</span>
+            </div>
             <button
               className="theme-btn"
               onClick={toggleTheme}
@@ -105,13 +169,13 @@ export default function HomePage() {
           <div className="intro-section">
             <h1 className="main-title">Upload Study PDF</h1>
             <p className="main-desc">
-              Drop your course notes, textbook chapters, or lecture slides to extract summaries and study materials.
+              Send your PDF via FormData directly to the backend server. Includes server-side MIME type, magic bytes header, and 50MB file size validation.
             </p>
           </div>
 
           {/* Upload Dropzone */}
           <div
-            className={`upload-zone ${isDragging ? 'dragging' : ''}`}
+            className={`upload-zone ${isDragging ? 'dragging' : ''} ${isUploading ? 'uploading' : ''}`}
             onDragOver={(e) => {
               e.preventDefault();
               setIsDragging(true);
@@ -122,48 +186,65 @@ export default function HomePage() {
               setIsDragging(false);
               handleFiles(e.dataTransfer.files);
             }}
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => {
+              if (!isUploading) fileInputRef.current?.click();
+            }}
           >
             <input
               type="file"
               ref={fileInputRef}
               className="file-input-hidden"
-              accept=".pdf"
+              accept="application/pdf,.pdf"
               onChange={(e) => handleFiles(e.target.files)}
             />
 
             <div className="upload-zone-content">
               <div className="icon-wrap">
-                <UploadCloud size={24} />
+                {isUploading ? (
+                  <Loader2 size={24} className="spinner" />
+                ) : (
+                  <UploadCloud size={24} />
+                )}
               </div>
               <div className="upload-text-group">
-                <h3 className="upload-heading">Click to browse or drop your PDF here</h3>
-                <p className="upload-hint">Supports PDF files up to 50MB</p>
+                <h3 className="upload-heading">
+                  {isUploading ? 'Sending PDF to backend...' : 'Click to browse or drop your PDF here'}
+                </h3>
+                <p className="upload-hint">
+                  FormData POST to <code>/api/upload</code> • Validated up to 50MB
+                </p>
               </div>
             </div>
 
-            {uploadProgress.active && (
+            {isUploading && (
               <div className="upload-progress-overlay" onClick={(e) => e.stopPropagation()}>
                 <div className="progress-info">
-                  <span className="progress-filename">{uploadProgress.name}</span>
+                  <span className="progress-filename">{uploadProgress.statusText}</span>
                   <span className="progress-percent">{uploadProgress.percent}%</span>
                 </div>
                 <div className="progress-bar-track">
-                  <div className="progress-bar-fill" style={{ width: `${uploadProgress.percent}%` }}></div>
+                  <div
+                    className="progress-bar-fill"
+                    style={{ width: `${uploadProgress.percent}%` }}
+                  ></div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Uploaded File Status Pill */}
+          {/* Uploaded Server File Response Card */}
           {uploadedFile && (
             <div className="uploaded-status-card">
               <div className="uploaded-info">
-                <FileCheck size={16} className="text-emerald" />
-                <span className="uploaded-name">{uploadedFile.name}</span>
-                <span className="uploaded-size">({uploadedFile.size})</span>
+                <FileCheck size={18} className="text-emerald" />
+                <div className="uploaded-meta-group">
+                  <span className="uploaded-name">{uploadedFile.name}</span>
+                  <span className="uploaded-meta">
+                    {uploadedFile.sizeFormatted} • MIME: {uploadedFile.type}
+                  </span>
+                </div>
               </div>
-              <span className="status-tag">Ready</span>
+              <span className="status-tag">Backend Validated</span>
             </div>
           )}
 
@@ -173,9 +254,9 @@ export default function HomePage() {
       {/* Toast Notification */}
       {toast && (
         <div className={`toast-alert toast-${toast.type}`}>
-          {toast.type === 'success' && <CheckCircle2 size={14} className="text-emerald" />}
-          {toast.type === 'info' && <AlertCircle size={14} />}
-          {toast.type === 'error' && <AlertCircle size={14} className="text-danger" />}
+          {toast.type === 'success' && <CheckCircle2 size={15} className="text-emerald" />}
+          {toast.type === 'info' && <AlertCircle size={15} />}
+          {toast.type === 'error' && <AlertCircle size={15} className="text-danger" />}
           <span>{toast.message}</span>
         </div>
       )}
@@ -229,6 +310,25 @@ export default function HomePage() {
           letter-spacing: -0.03em;
         }
 
+        .header-actions {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+        }
+
+        .server-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          font-size: 0.72rem;
+          font-family: var(--font-mono);
+          padding: 0.2rem 0.5rem;
+          border-radius: var(--radius-xs);
+          background: var(--bg-tertiary);
+          border: 1px solid var(--border-subtle);
+          color: var(--text-muted);
+        }
+
         .theme-btn {
           width: 32px;
           height: 32px;
@@ -276,10 +376,10 @@ export default function HomePage() {
         }
 
         .main-desc {
-          font-size: 1rem;
+          font-size: 0.95rem;
           color: var(--text-secondary);
           line-height: 1.6;
-          max-width: 540px;
+          max-width: 560px;
           margin: 0 auto;
         }
 
@@ -299,6 +399,10 @@ export default function HomePage() {
         .upload-zone.dragging {
           border-color: var(--text-primary);
           background: var(--bg-tertiary);
+        }
+
+        .upload-zone.uploading {
+          cursor: default;
         }
 
         .file-input-hidden {
@@ -324,6 +428,15 @@ export default function HomePage() {
           color: var(--text-secondary);
         }
 
+        :global(.spinner) {
+          animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+
         .upload-text-group {
           display: flex;
           flex-direction: column;
@@ -339,6 +452,15 @@ export default function HomePage() {
         .upload-hint {
           font-size: 0.82rem;
           color: var(--text-muted);
+        }
+
+        .upload-hint code {
+          font-family: var(--font-mono);
+          font-size: 0.78rem;
+          background: var(--bg-primary);
+          padding: 0.1rem 0.35rem;
+          border-radius: 3px;
+          border: 1px solid var(--border-subtle);
         }
 
         .upload-progress-overlay {
@@ -358,17 +480,13 @@ export default function HomePage() {
           display: flex;
           justify-content: space-between;
           width: 100%;
-          max-width: 360px;
+          max-width: 380px;
           font-size: 0.82rem;
           font-family: var(--font-mono);
         }
 
         .progress-filename {
           color: var(--text-primary);
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
-          max-width: 260px;
         }
 
         .progress-percent {
@@ -377,7 +495,7 @@ export default function HomePage() {
 
         .progress-bar-track {
           width: 100%;
-          max-width: 360px;
+          max-width: 380px;
           height: 5px;
           background: var(--border-subtle);
           border-radius: 3px;
@@ -404,12 +522,18 @@ export default function HomePage() {
         .uploaded-info {
           display: flex;
           align-items: center;
-          gap: 0.6rem;
+          gap: 0.75rem;
           min-width: 0;
         }
 
+        .uploaded-meta-group {
+          display: flex;
+          flex-direction: column;
+          gap: 0.15rem;
+        }
+
         .uploaded-name {
-          font-size: 0.85rem;
+          font-size: 0.88rem;
           font-weight: 500;
           color: var(--text-primary);
           overflow: hidden;
@@ -417,7 +541,7 @@ export default function HomePage() {
           white-space: nowrap;
         }
 
-        .uploaded-size {
+        .uploaded-meta {
           font-size: 0.75rem;
           font-family: var(--font-mono);
           color: var(--text-muted);
@@ -426,10 +550,12 @@ export default function HomePage() {
         .status-tag {
           font-size: 0.72rem;
           font-family: var(--font-mono);
-          padding: 0.15rem 0.45rem;
+          padding: 0.2rem 0.55rem;
           border-radius: var(--radius-xs);
           background: var(--emerald-subtle);
           color: var(--emerald-primary);
+          border: 1px solid rgba(16, 185, 129, 0.2);
+          white-space: nowrap;
         }
 
         /* Toast */
@@ -448,6 +574,7 @@ export default function HomePage() {
           color: var(--text-primary);
           box-shadow: var(--shadow-md);
           z-index: 1000;
+          max-width: 440px;
         }
 
         .toast-success { border-color: var(--emerald-primary); }
@@ -459,6 +586,9 @@ export default function HomePage() {
           }
           .upload-zone {
             padding: 2.5rem 1.25rem;
+          }
+          .server-badge {
+            display: none;
           }
         }
       `}</style>
