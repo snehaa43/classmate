@@ -8,7 +8,8 @@ import { PDFParse, VerbosityLevel } from 'pdf-parse';
 
 export interface ParsedPage {
   pageNumber: number;   // 1-indexed page number
-  text: string;         // Extracted text content of the page
+  text: string;         // Cleaned text content of the page
+  rawText?: string;     // Original uncleaned text from PDF parser
   wordCount: number;    // Number of words on this page
   charCount: number;    // Character count on this page
 }
@@ -24,6 +25,75 @@ export interface TemporaryPdfDocument {
   pages: ParsedPage[];      // Page-by-page extracted text array
   uploadedAt: string;       // ISO timestamp of upload
   expiresAt: string;        // Expiration timestamp (e.g. 1 hour TTL)
+}
+
+/**
+ * ============================================================================
+ * TEXT CLEANING PIPELINE
+ * Cleans, sanitizes, and normalizes raw text extracted from PDF streams.
+ * ============================================================================
+ */
+export function cleanExtractedText(rawText: string): string {
+  if (!rawText || typeof rawText !== 'string') return '';
+
+  let text = rawText;
+
+  // --------------------------------------------------------------------------
+  // ACTION 1: Unicode Normalization (NFKC)
+  // Decomposes and recomposes Unicode characters to canonical forms
+  // --------------------------------------------------------------------------
+  text = text.normalize('NFKC');
+
+  // --------------------------------------------------------------------------
+  // ACTION 2: Ligature Normalization
+  // Expands standard font ligatures (e.g., 'ﬁ' -> 'fi', 'ﬂ' -> 'fl')
+  // --------------------------------------------------------------------------
+  const ligatureMap: Record<string, string> = {
+    'ﬁ': 'fi',
+    'ﬂ': 'fl',
+    'ﬀ': 'ff',
+    'ﬃ': 'ffi',
+    'ﬄ': 'ffl',
+    'œ': 'oe',
+    'Œ': 'OE',
+    'æ': 'ae',
+    'Æ': 'AE'
+  };
+  text = text.replace(/[ﬁﬂﬀﬃﬄœŒæÆ]/g, (char) => ligatureMap[char] || char);
+
+  // --------------------------------------------------------------------------
+  // ACTION 3: Strip Non-Printable & Binary Control Characters
+  // Removes ASCII control codes, zero-width spaces, and replacement glyphs
+  // Preserves standard line breaks (\n, \r) and horizontal tabs (\t)
+  // --------------------------------------------------------------------------
+  text = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200D\uFEFF\uFFFD]/g, '');
+
+  // --------------------------------------------------------------------------
+  // ACTION 4: Reconstruct Hyphenated Word Breaks
+  // Joins words split across consecutive lines with a hyphen (e.g. 'docu-\nment' -> 'document')
+  // --------------------------------------------------------------------------
+  text = text.replace(/(\b[a-zA-Z]{2,})-\s*\r?\n\s*([a-zA-Z]{2,}\b)/g, (_match, p1, p2) => p1 + p2);
+
+  // --------------------------------------------------------------------------
+  // ACTION 5: Normalize Horizontal Whitespace
+  // Converts non-breaking spaces & consecutive tabs/spaces to single space
+  // Trims each line individually
+  // --------------------------------------------------------------------------
+  text = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[^\S\r\n]+/g, ' ').trim())
+    .join('\n');
+
+  // --------------------------------------------------------------------------
+  // ACTION 6: Normalize Paragraph & Vertical Gaps
+  // Reduces 3 or more consecutive newlines down to 2 (\n\n) to preserve paragraphs
+  // --------------------------------------------------------------------------
+  text = text.replace(/\n{3,}/g, '\n\n');
+
+  // --------------------------------------------------------------------------
+  // ACTION 7: Trim Leading & Trailing Whitespace
+  // --------------------------------------------------------------------------
+  return text.trim();
 }
 
 /**
@@ -127,23 +197,27 @@ export async function parsePdfPageByPage(buffer: Buffer): Promise<{
     let totalWords = 0;
     let totalChars = 0;
 
-    // Action 4: Process and compute statistics for each extracted page
+    // Action 4: Process, clean, and compute statistics for each extracted page
     for (let i = 0; i < rawPages.length; i++) {
       const p = rawPages[i];
       const pageNumber = p.num || (i + 1);
       const rawText = (p.text || '').trim();
 
-      // Compute word and character counts
-      const words = rawText.length > 0 ? rawText.split(/\s+/).filter(Boolean) : [];
+      // Action 4a: Apply text cleaning pipeline
+      const cleanedText = cleanExtractedText(rawText);
+
+      // Action 4b: Compute word and character counts on cleaned text
+      const words = cleanedText.length > 0 ? cleanedText.split(/\s+/).filter(Boolean) : [];
       const wordCount = words.length;
-      const charCount = rawText.length;
+      const charCount = cleanedText.length;
 
       totalWords += wordCount;
       totalChars += charCount;
 
       pages.push({
         pageNumber,
-        text: rawText || `[Page ${pageNumber}: No readable text content or scanned image]`,
+        text: cleanedText || `[Page ${pageNumber}: No readable text content or scanned image]`,
+        rawText,
         wordCount,
         charCount
       });
@@ -151,16 +225,17 @@ export async function parsePdfPageByPage(buffer: Buffer): Promise<{
 
     // Action 5: Fallback if pages array was empty but text property exists
     if (pages.length === 0 && textResult?.text) {
-      const fallbackText = textResult.text.trim();
-      const words = fallbackText.length > 0 ? fallbackText.split(/\s+/).filter(Boolean) : [];
+      const fallbackCleaned = cleanExtractedText(textResult.text);
+      const words = fallbackCleaned.length > 0 ? fallbackCleaned.split(/\s+/).filter(Boolean) : [];
       pages.push({
         pageNumber: 1,
-        text: fallbackText || '[Page 1: Empty text content]',
+        text: fallbackCleaned || '[Page 1: Empty text content]',
+        rawText: textResult.text,
         wordCount: words.length,
-        charCount: fallbackText.length
+        charCount: fallbackCleaned.length
       });
       totalWords = words.length;
-      totalChars = fallbackText.length;
+      totalChars = fallbackCleaned.length;
     }
 
     return {
@@ -178,4 +253,5 @@ export async function parsePdfPageByPage(buffer: Buffer): Promise<{
     }
   }
 }
+
 

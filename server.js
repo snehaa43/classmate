@@ -153,6 +153,44 @@ const server = http.createServer(async (req, res) => {
         }));
       }
 
+// ============================================================================
+// TEXT CLEANING PIPELINE
+// Cleans, sanitizes, and normalizes raw text extracted from PDF streams.
+// ============================================================================
+function cleanExtractedText(rawText) {
+  if (!rawText || typeof rawText !== 'string') return '';
+
+  let text = rawText;
+
+  // ACTION 1: Unicode Normalization (NFKC)
+  text = text.normalize('NFKC');
+
+  // ACTION 2: Ligature Normalization
+  const ligatureMap = {
+    'ﬁ': 'fi', 'ﬂ': 'fl', 'ﬀ': 'ff', 'ﬃ': 'ffi', 'ﬄ': 'ffl',
+    'œ': 'oe', 'Œ': 'OE', 'æ': 'ae', 'Æ': 'AE'
+  };
+  text = text.replace(/[ﬁﬂﬀﬃﬄœŒæÆ]/g, (char) => ligatureMap[char] || char);
+
+  // ACTION 3: Strip Non-Printable & Binary Control Characters
+  text = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\u200B-\u200D\uFEFF\uFFFD]/g, '');
+
+  // ACTION 4: Reconstruct Hyphenated Word Breaks
+  text = text.replace(/(\b[a-zA-Z]{2,})-\s*\r?\n\s*([a-zA-Z]{2,}\b)/g, (_match, p1, p2) => p1 + p2);
+
+  // ACTION 5: Normalize Horizontal Whitespace
+  text = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[^\S\r\n]+/g, ' ').trim())
+    .join('\n');
+
+  // ACTION 6: Normalize Paragraph & Vertical Gaps
+  text = text.replace(/\n{3,}/g, '\n\n');
+
+  // ACTION 7: Trim Leading & Trailing Whitespace
+  return text.trim();
+}
+
       // Step 7: Parse PDF and extract page-by-page text
       try {
         const parser = new PDFParse({
@@ -173,32 +211,36 @@ const server = http.createServer(async (req, res) => {
           const p = rawPages[i];
           const pageNumber = p.num || (i + 1);
           const rawText = (p.text || '').trim();
-          const words = rawText.length > 0 ? rawText.split(/\s+/).filter(Boolean) : [];
+          const cleanedText = cleanExtractedText(rawText);
+
+          const words = cleanedText.length > 0 ? cleanedText.split(/\s+/).filter(Boolean) : [];
           const wordCount = words.length;
-          const charCount = rawText.length;
+          const charCount = cleanedText.length;
 
           totalWords += wordCount;
           totalChars += charCount;
 
           pages.push({
             pageNumber,
-            text: rawText || `[Page ${pageNumber}: No readable text content]`,
+            text: cleanedText || `[Page ${pageNumber}: No readable text content]`,
+            rawText,
             wordCount,
             charCount
           });
         }
 
         if (pages.length === 0 && textResult?.text) {
-          const fallbackText = textResult.text.trim();
-          const words = fallbackText.length > 0 ? fallbackText.split(/\s+/).filter(Boolean) : [];
+          const fallbackCleaned = cleanExtractedText(textResult.text);
+          const words = fallbackCleaned.length > 0 ? fallbackCleaned.split(/\s+/).filter(Boolean) : [];
           pages.push({
             pageNumber: 1,
-            text: fallbackText || '[Page 1: Empty content]',
+            text: fallbackCleaned || '[Page 1: Empty content]',
+            rawText: textResult.text,
             wordCount: words.length,
-            charCount: fallbackText.length
+            charCount: fallbackCleaned.length
           });
           totalWords = words.length;
-          totalChars = fallbackText.length;
+          totalChars = fallbackCleaned.length;
         }
 
         try {

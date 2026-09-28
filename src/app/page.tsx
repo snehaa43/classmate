@@ -452,11 +452,11 @@ export default function HomePage() {
                     <div className="page-meta-indicator">
                       <Layers size={14} />
                       {selectedPageIndex === -1 ? (
-                        <span>Complete Extracted Document ({extractedDoc.totalPages} Pages Combined)</span>
+                        <span>Complete Extracted Document ({extractedDoc.totalPages} Pages Combined) • Cleaned Text</span>
                       ) : (
                         <span>
                           Viewing Page {selectedPageIndex + 1} of {extractedDoc.totalPages} —{' '}
-                          <strong>{extractedDoc.pages[selectedPageIndex]?.wordCount || 0} words</strong> ({extractedDoc.pages[selectedPageIndex]?.charCount || 0} characters)
+                          <strong>{extractedDoc.pages[selectedPageIndex]?.wordCount || 0} words</strong> ({extractedDoc.pages[selectedPageIndex]?.charCount || 0} characters) • Cleaned
                         </span>
                       )}
                     </div>
