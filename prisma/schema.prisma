@@ -1,0 +1,66 @@
+// ============================================================================
+// PRISMA SCHEMA DEFINITION
+// Database relations for Classmate: User -> Document -> Chunk
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// ACTION 1: User Model
+// Represents registered users who own and manage study documents
+// ----------------------------------------------------------------------------
+model User {
+  id        String     @id @default(cuid()) // Unique Primary Key
+  email     String     @unique              // User email address (unique)
+  password  String?                         // Hashed password for authentication
+  name      String?                         // Optional user display name
+  documents Document[]                      // 1-to-Many relation: A user has many documents
+
+  createdAt DateTime   @default(now())      // Creation timestamp
+  updatedAt DateTime   @updatedAt           // Last update timestamp
+
+  @@map("users")
+}
+
+// ----------------------------------------------------------------------------
+// ACTION 2: Document Model
+// Represents uploaded PDF documents associated with a user
+// ----------------------------------------------------------------------------
+model Document {
+  id        String   @id @default(cuid())   // Unique Primary Key
+  title     String                          // Document / file title
+  userId    String                          // Foreign Key referencing User(id)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks    Chunk[]                         // 1-to-Many relation: A document has many chunks
+
+  createdAt DateTime @default(now())        // Creation timestamp
+  updatedAt DateTime @updatedAt             // Last update timestamp
+
+  @@index([userId])
+  @@map("documents")
+}
+
+// ----------------------------------------------------------------------------
+// ACTION 3: Chunk Model
+// Represents segmented semantic text chunks extracted from document pages
+// ----------------------------------------------------------------------------
+model Chunk {
+  id         String   @id @default(cuid())  // Unique Primary Key
+  content    String   @db.Text              // Extracted text chunk content
+  pageNumber Int                            // Originating page number (1-indexed)
+  documentId String                         // Foreign Key referencing Document(id)
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  createdAt  DateTime @default(now())       // Creation timestamp
+
+  @@index([documentId])
+  @@index([pageNumber])
+  @@map("chunks")
+}

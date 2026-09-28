@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
+import Link from 'next/link';
 import {
   UploadCloud,
   CheckCircle2,
@@ -12,23 +13,39 @@ import {
   Search,
   Code2,
   Layers,
-  Clock,
   Trash2,
-  Server,
   Loader2,
-  FileCheck
+  FileCheck,
+  Scissors,
+  Check,
+  LogIn,
+  LogOut,
+  User as UserIcon
 } from 'lucide-react';
 
 /**
  * ============================================================================
- * TYPE DEFINITIONS FOR PARSED PAGE AND SERVER DOCUMENT
+ * TYPE DEFINITIONS FOR PARSED PAGES, CHUNKS & SERVER DOCUMENTS
  * ============================================================================
  */
 interface ParsedPage {
   pageNumber: number;
   text: string;
+  rawText?: string;
   wordCount: number;
   charCount: number;
+}
+
+interface TextChunk {
+  id: string;
+  documentId?: string;
+  pageNumber?: number;
+  chunkIndex: number;
+  text: string;
+  charCount: number;
+  wordCount: number;
+  tokenEstimate: number;
+  metadata?: Record<string, any>;
 }
 
 interface StoredPdfDocument {
@@ -40,6 +57,7 @@ interface StoredPdfDocument {
   totalWords: number;
   totalChars: number;
   pages: ParsedPage[];
+  chunks?: TextChunk[];
   uploadedAt: string;
   expiresAt: string;
 }
@@ -65,30 +83,76 @@ export default function HomePage() {
   // Stored extracted document received from backend
   const [extractedDoc, setExtractedDoc] = useState<StoredPdfDocument | null>(null);
 
-  // Selected page view index (0 = Page 1, -1 = All Pages Combined)
+  // Active view mode: 'pages' | 'chunks' | 'json'
+  const [viewMode, setViewMode] = useState<'pages' | 'chunks' | 'json'>('pages');
+
+  // Selected page view index for Pages View (0 = Page 1, -1 = All Pages Combined)
   const [selectedPageIndex, setSelectedPageIndex] = useState<number>(0);
 
-  // Search filter query inside extracted text
+  // Search filter query inside extracted page text
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  // Toggle between formatted page view and raw JSON debug view
-  const [showJsonDebug, setShowJsonDebug] = useState<boolean>(false);
+  // Search filter query inside generated chunks
+  const [chunkSearchQuery, setChunkSearchQuery] = useState<string>('');
+
+  // Page filter for Chunks View (-1 = all pages)
+  const [chunkPageFilter, setChunkPageFilter] = useState<number>(-1);
+
+  // Copy success indicator state for chunk IDs
+  const [copiedChunkId, setCopiedChunkId] = useState<string | null>(null);
 
   // Toast notification state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
 
+  // Authenticated user state
+  const [currentUser, setCurrentUser] = useState<{ id: string; email: string; name?: string | null } | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // --------------------------------------------------------------------------
-  // ACTION: Load and Sync Theme Preference from LocalStorage
+  // ACTION: Load Theme & Current Authenticated User Session
   // --------------------------------------------------------------------------
   useEffect(() => {
-    const saved = localStorage.getItem('classmate_theme') as 'dark' | 'light' | null;
-    if (saved) {
-      setTheme(saved);
-      document.documentElement.setAttribute('data-theme', saved);
+    const savedTheme = localStorage.getItem('classmate_theme') as 'dark' | 'light' | null;
+    if (savedTheme) {
+      setTheme(savedTheme);
+      document.documentElement.setAttribute('data-theme', savedTheme);
     }
+
+    // Check cached user in localStorage
+    const cachedUser = localStorage.getItem('classmate_user');
+    if (cachedUser) {
+      try {
+        setCurrentUser(JSON.parse(cachedUser));
+      } catch {}
+    }
+
+    // Fetch fresh user profile from backend session cookie
+    fetch('/api/auth/me')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.success && data.user) {
+          setCurrentUser(data.user);
+          localStorage.setItem('classmate_user', JSON.stringify(data.user));
+        } else {
+          setCurrentUser(null);
+          localStorage.removeItem('classmate_user');
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  // --------------------------------------------------------------------------
+  // ACTION: Handle User Logout
+  // --------------------------------------------------------------------------
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {}
+    setCurrentUser(null);
+    localStorage.removeItem('classmate_user');
+    showToast('Logged out successfully.', 'info');
+  };
 
   // --------------------------------------------------------------------------
   // ACTION: Toggle Dark / Light Theme
@@ -110,7 +174,7 @@ export default function HomePage() {
 
   // --------------------------------------------------------------------------
   // ACTION: Main Upload & Page-by-Page Extraction Pipeline
-  // Validates file -> constructs FormData -> sends to /api/upload -> parses pages
+  // Validates file -> constructs FormData -> sends to /api/upload -> parses & chunks
   // --------------------------------------------------------------------------
   const uploadAndParsePdf = async (file: File) => {
     // Step 1: Validate file extension & MIME type
@@ -149,7 +213,7 @@ export default function HomePage() {
         body: formData,
       });
 
-      setUploadProgress({ percent: 85, statusText: 'Processing extracted text...' });
+      setUploadProgress({ percent: 85, statusText: 'Processing extracted text & chunks...' });
 
       const responseText = await res.text();
       let response: any = null;
@@ -170,8 +234,9 @@ export default function HomePage() {
         setUploadProgress({ percent: 100, statusText: 'Extracted successfully!' });
         setExtractedDoc(response.document);
         setSelectedPageIndex(0);
+        setViewMode('pages');
         showToast(
-          response.message || `Extracted ${response.document.totalPages || 1} page(s) successfully!`,
+          response.message || `Extracted ${response.document.totalPages || 1} page(s) and generated ${response.document.chunks?.length || 0} chunk(s)!`,
           'success'
         );
       } else {
@@ -194,11 +259,18 @@ export default function HomePage() {
   };
 
   // --------------------------------------------------------------------------
-  // ACTION: Copy Extracted Text to System Clipboard
+  // ACTION: Copy Text to System Clipboard
   // --------------------------------------------------------------------------
   const handleCopyText = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
     showToast(`${label} copied to clipboard!`, 'success');
+  };
+
+  const handleCopyChunk = (chunk: TextChunk) => {
+    navigator.clipboard.writeText(chunk.text);
+    setCopiedChunkId(chunk.id);
+    showToast(`Chunk #${chunk.chunkIndex + 1} text copied!`, 'success');
+    setTimeout(() => setCopiedChunkId(null), 2000);
   };
 
   // --------------------------------------------------------------------------
@@ -208,7 +280,8 @@ export default function HomePage() {
     setExtractedDoc(null);
     setSelectedPageIndex(0);
     setSearchQuery('');
-    setShowJsonDebug(false);
+    setChunkSearchQuery('');
+    setViewMode('pages');
     showToast('Document cleared.', 'info');
   };
 
@@ -226,13 +299,26 @@ export default function HomePage() {
 
   const activeText = getActiveTextContent();
 
-  // Helper: Filter active text with search highlight
+  // Helper: Filter active text with search highlight in Pages View
   const filteredText = searchQuery.trim()
     ? activeText
         .split('\n')
         .filter((line) => line.toLowerCase().includes(searchQuery.toLowerCase()))
         .join('\n')
     : activeText;
+
+  // Helper: Filter chunks in Chunks View
+  const allChunks = extractedDoc?.chunks || [];
+  const filteredChunks = allChunks.filter((chunk) => {
+    const matchesPage = chunkPageFilter === -1 || chunk.pageNumber === chunkPageFilter;
+    const matchesSearch =
+      !chunkSearchQuery.trim() ||
+      chunk.text.toLowerCase().includes(chunkSearchQuery.toLowerCase()) ||
+      chunk.id.toLowerCase().includes(chunkSearchQuery.toLowerCase());
+    return matchesPage && matchesSearch;
+  });
+
+  const totalChunkTokens = allChunks.reduce((sum, c) => sum + c.tokenEstimate, 0);
 
   return (
     <div className="page-wrapper">
@@ -248,14 +334,34 @@ export default function HomePage() {
 
           <div className="header-actions">
             <div className="server-badge">
-              <Server size={12} />
-              <span>In-Memory Page Parser Active</span>
+              <span className="badge-pulse"></span>
+              <span>Parser & Chunker Active</span>
             </div>
+
+            {currentUser ? (
+              <div className="user-profile-pill">
+                <UserIcon size={13} className="text-emerald" />
+                <span className="user-email-text">{currentUser.name || currentUser.email}</span>
+                <button
+                  className="btn-logout"
+                  onClick={handleLogout}
+                  title="Log out"
+                >
+                  <LogOut size={12} />
+                  <span>Logout</span>
+                </button>
+              </div>
+            ) : (
+              <Link href="/login" className="btn-signin">
+                <LogIn size={13} />
+                <span>Sign In</span>
+              </Link>
+            )}
+
             <button
               className="theme-btn"
               onClick={toggleTheme}
               title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
-              aria-label="Toggle theme"
             >
               {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
             </button>
@@ -264,16 +370,16 @@ export default function HomePage() {
       </header>
 
       {/* ====================================================================
-          MAIN CONTENT
+          MAIN CONTENT AREA
           ==================================================================== */}
       <main className="main-content">
         <div className="container content-container">
           
           {/* Intro Heading */}
           <div className="intro-section">
-            <h1 className="main-title">PDF Page-by-Page Parser</h1>
+            <h1 className="main-title">PDF Parser & Chunk Extractor</h1>
             <p className="main-desc">
-              Upload any PDF file. The backend extracts text page-by-page, stores the results in a temporary in-memory store, and renders the extracted content below for live inspection and testing.
+              Upload any PDF file. The backend parses text page-by-page, performs sanitization, splits the document into semantic chunks with overlap, and displays the results below for live inspection.
             </p>
           </div>
 
@@ -312,7 +418,7 @@ export default function HomePage() {
               </div>
               <div className="upload-text-group">
                 <h3 className="upload-heading">
-                  {isUploading ? 'Parsing & Extracting Pages...' : 'Click to browse or drop your PDF here'}
+                  {isUploading ? 'Parsing, Cleaning & Chunking...' : 'Click to browse or drop your PDF here'}
                 </h3>
                 <p className="upload-hint">
                   FormData POST to <code>/api/upload</code> • Validated up to 50MB
@@ -337,7 +443,7 @@ export default function HomePage() {
           </div>
 
           {/* ==================================================================
-              EXTRACTED TEXT TESTING & INSPECTION VIEWER
+              EXTRACTED TEXT & CHUNKS TESTING VIEWER
               ================================================================== */}
           {extractedDoc && (
             <div className="extracted-results-wrapper">
@@ -349,20 +455,40 @@ export default function HomePage() {
                   <div className="doc-title-group">
                     <span className="doc-filename">{extractedDoc.filename}</span>
                     <span className="doc-stats">
-                      {extractedDoc.sizeFormatted} • {extractedDoc.totalPages} Page(s) • {extractedDoc.totalWords.toLocaleString()} Words • {extractedDoc.totalChars.toLocaleString()} Characters
+                      {extractedDoc.sizeFormatted} • {extractedDoc.totalPages} Page(s) • {extractedDoc.totalWords.toLocaleString()} Words • {allChunks.length} Chunks (~{totalChunkTokens.toLocaleString()} tokens)
                     </span>
                   </div>
                 </div>
 
                 <div className="summary-actions">
-                  <button
-                    className={`btn-toggle ${showJsonDebug ? 'active' : ''}`}
-                    onClick={() => setShowJsonDebug(!showJsonDebug)}
-                    title="Toggle Raw JSON Store Data"
-                  >
-                    <Code2 size={13} />
-                    <span>{showJsonDebug ? 'Formatted Text' : 'Raw JSON Store'}</span>
-                  </button>
+                  {/* View Mode Switcher */}
+                  <div className="view-mode-group">
+                    <button
+                      className={`btn-view-tab ${viewMode === 'pages' ? 'active' : ''}`}
+                      onClick={() => setViewMode('pages')}
+                      title="View Page by Page Text"
+                    >
+                      <FileText size={13} />
+                      <span>Pages ({extractedDoc.totalPages})</span>
+                    </button>
+                    <button
+                      className={`btn-view-tab ${viewMode === 'chunks' ? 'active' : ''}`}
+                      onClick={() => setViewMode('chunks')}
+                      title="View Generated Semantic Chunks"
+                    >
+                      <Scissors size={13} />
+                      <span>Chunks ({allChunks.length})</span>
+                    </button>
+                    <button
+                      className={`btn-view-tab ${viewMode === 'json' ? 'active' : ''}`}
+                      onClick={() => setViewMode('json')}
+                      title="View Raw In-Memory JSON Store"
+                    >
+                      <Code2 size={13} />
+                      <span>JSON Store</span>
+                    </button>
+                  </div>
+
                   <button
                     className="btn-icon-danger"
                     onClick={handleResetDocument}
@@ -381,31 +507,15 @@ export default function HomePage() {
                 <span>Uploaded: {new Date(extractedDoc.uploadedAt).toLocaleTimeString()}</span>
                 <span>•</span>
                 <span>Expires: {new Date(extractedDoc.expiresAt).toLocaleTimeString()} (TTL: 1h)</span>
+                <span>•</span>
+                <span>Generated Chunks: <strong>{allChunks.length}</strong></span>
               </div>
 
-              {/* Conditional View: Raw JSON Store Debug vs. Page Viewer */}
-              {showJsonDebug ? (
-                /* Raw JSON Debug View */
-                <div className="json-debug-container">
-                  <div className="viewer-header">
-                    <span className="viewer-title">
-                      <Code2 size={14} /> Temporary In-Memory Store JSON Payload
-                    </span>
-                    <button
-                      className="btn-copy"
-                      onClick={() => handleCopyText(JSON.stringify(extractedDoc, null, 2), 'JSON Payload')}
-                    >
-                      <Copy size={13} /> Copy JSON
-                    </button>
-                  </div>
-                  <pre className="json-code-block">
-                    <code>{JSON.stringify(extractedDoc, null, 2)}</code>
-                  </pre>
-                </div>
-              ) : (
-                /* Page-by-Page Interactive Extracted Text View */
+              {/* ==============================================================
+                  VIEW MODE 1: PAGES VIEW
+                  ============================================================== */}
+              {viewMode === 'pages' && (
                 <div className="page-viewer-container">
-                  
                   {/* Page Navigation Tabs */}
                   <div className="page-tabs-bar">
                     <div className="page-tabs-scroll">
@@ -434,7 +544,7 @@ export default function HomePage() {
                       <Search size={13} className="search-icon" />
                       <input
                         type="text"
-                        placeholder="Search text on page..."
+                        placeholder="Search page text..."
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         className="search-input"
@@ -489,7 +599,164 @@ export default function HomePage() {
                       </pre>
                     )}
                   </div>
+                </div>
+              )}
 
+              {/* ==============================================================
+                  VIEW MODE 2: CHUNKS VIEW
+                  ============================================================== */}
+              {viewMode === 'chunks' && (
+                <div className="chunks-viewer-container">
+                  {/* Chunks Toolbar */}
+                  <div className="chunks-toolbar">
+                    <div className="chunks-filter-tabs">
+                      <button
+                        className={`chunk-tab ${chunkPageFilter === -1 ? 'active' : ''}`}
+                        onClick={() => setChunkPageFilter(-1)}
+                      >
+                        All Pages ({allChunks.length} chunks)
+                      </button>
+                      {extractedDoc.pages.map((p) => {
+                        const count = allChunks.filter((c) => c.pageNumber === p.pageNumber).length;
+                        return (
+                          <button
+                            key={p.pageNumber}
+                            className={`chunk-tab ${chunkPageFilter === p.pageNumber ? 'active' : ''}`}
+                            onClick={() => setChunkPageFilter(p.pageNumber)}
+                          >
+                            Page {p.pageNumber} ({count})
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="chunks-toolbar-right">
+                      {/* Search Chunks */}
+                      <div className="search-filter-wrap">
+                        <Search size={13} className="search-icon" />
+                        <input
+                          type="text"
+                          placeholder="Search in chunks..."
+                          value={chunkSearchQuery}
+                          onChange={(e) => setChunkSearchQuery(e.target.value)}
+                          className="search-input"
+                        />
+                        {chunkSearchQuery && (
+                          <button className="clear-search-btn" onClick={() => setChunkSearchQuery('')}>
+                            &times;
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Copy All Chunks */}
+                      <button
+                        className="btn-copy"
+                        onClick={() =>
+                          handleCopyText(
+                            JSON.stringify(allChunks, null, 2),
+                            'All Chunks JSON'
+                          )
+                        }
+                      >
+                        <Copy size={13} />
+                        <span>Copy Chunks (JSON)</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Chunks Statistics Bar */}
+                  <div className="chunks-metrics-bar">
+                    <div className="chunk-metric">
+                      <span className="metric-label">Total Chunks:</span>
+                      <span className="metric-val">{allChunks.length}</span>
+                    </div>
+                    <div className="chunk-metric">
+                      <span className="metric-label">Filtered Chunks:</span>
+                      <span className="metric-val">{filteredChunks.length}</span>
+                    </div>
+                    <div className="chunk-metric">
+                      <span className="metric-label">Total Estimated Tokens:</span>
+                      <span className="metric-val">~{totalChunkTokens.toLocaleString()}</span>
+                    </div>
+                    <div className="chunk-metric">
+                      <span className="metric-label">Config:</span>
+                      <span className="metric-val">Size: 500c • Overlap: 50c</span>
+                    </div>
+                  </div>
+
+                  {/* Chunks Grid / List */}
+                  <div className="chunks-list">
+                    {filteredChunks.length === 0 ? (
+                      <div className="no-matches-box">
+                        <p>No chunks match the current filter or search criteria.</p>
+                      </div>
+                    ) : (
+                      filteredChunks.map((chunk, idx) => (
+                        <div key={chunk.id} className="chunk-card">
+                          <div className="chunk-card-header">
+                            <div className="chunk-header-left">
+                              <span className="chunk-index-badge">Chunk #{chunk.chunkIndex + 1}</span>
+                              {chunk.pageNumber && (
+                                <span className="chunk-page-badge">Page {chunk.pageNumber}</span>
+                              )}
+                              <code className="chunk-id-tag">{chunk.id}</code>
+                            </div>
+
+                            <div className="chunk-header-right">
+                              <span className="chunk-stat">{chunk.wordCount} words</span>
+                              <span className="chunk-stat">{chunk.charCount} chars</span>
+                              <span className="chunk-stat">~{chunk.tokenEstimate} tokens</span>
+                              <button
+                                className="btn-copy-chunk"
+                                onClick={() => handleCopyChunk(chunk)}
+                                title="Copy this chunk text"
+                              >
+                                {copiedChunkId === chunk.id ? (
+                                  <>
+                                    <Check size={12} className="text-emerald" />
+                                    <span>Copied</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={12} />
+                                    <span>Copy</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="chunk-card-body">
+                            <pre className="chunk-text-pre">
+                              <code>{chunk.text}</code>
+                            </pre>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ==============================================================
+                  VIEW MODE 3: RAW JSON STORE DEBUG VIEW
+                  ============================================================== */}
+              {viewMode === 'json' && (
+                <div className="json-debug-container">
+                  <div className="viewer-header">
+                    <span className="viewer-title">
+                      <Code2 size={14} /> Temporary In-Memory Store Document (including Pages & Chunks)
+                    </span>
+                    <button
+                      className="btn-copy"
+                      onClick={() => handleCopyText(JSON.stringify(extractedDoc, null, 2), 'JSON Payload')}
+                    >
+                      <Copy size={13} /> Copy JSON
+                    </button>
+                  </div>
+                  <pre className="json-code-block">
+                    <code>{JSON.stringify(extractedDoc, null, 2)}</code>
+                  </pre>
                 </div>
               )}
 
@@ -521,11 +788,12 @@ export default function HomePage() {
           color: var(--text-primary);
           display: flex;
           flex-direction: column;
+          font-family: var(--font-sans);
         }
 
         .container {
           width: 100%;
-          max-width: 780px;
+          max-width: 980px;
           margin: 0 auto;
           padding: 0 1.5rem;
         }
@@ -533,15 +801,17 @@ export default function HomePage() {
         /* Header */
         .header {
           border-bottom: 1px solid var(--border-subtle);
-          background: var(--bg-secondary);
+          background-color: var(--bg-primary);
+          position: sticky;
+          top: 0;
+          z-index: 50;
         }
 
         .header-inner {
-          height: 56px;
+          height: 64px;
           display: flex;
           align-items: center;
           justify-content: space-between;
-          max-width: 780px;
         }
 
         .brand {
@@ -572,14 +842,21 @@ export default function HomePage() {
         .server-badge {
           display: inline-flex;
           align-items: center;
-          gap: 0.4rem;
+          gap: 0.45rem;
           font-size: 0.72rem;
           font-family: var(--font-mono);
-          padding: 0.2rem 0.5rem;
+          padding: 0.25rem 0.55rem;
           border-radius: var(--radius-xs);
           background: var(--bg-tertiary);
           border: 1px solid var(--border-subtle);
-          color: var(--text-muted);
+          color: var(--text-secondary);
+        }
+
+        .badge-pulse {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--emerald-primary);
         }
 
         .theme-btn {
@@ -599,6 +876,64 @@ export default function HomePage() {
         .theme-btn:hover {
           color: var(--text-primary);
           border-color: var(--border-medium);
+        }
+
+        .btn-signin {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          padding: 0.35rem 0.75rem;
+          border-radius: var(--radius-xs);
+          background: var(--text-primary);
+          color: var(--bg-primary);
+          font-size: 0.78rem;
+          font-weight: 600;
+          text-decoration: none;
+          transition: all var(--transition-fast);
+        }
+
+        .btn-signin:hover {
+          opacity: 0.9;
+          transform: translateY(-1px);
+        }
+
+        .user-profile-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.45rem;
+          padding: 0.25rem 0.65rem;
+          border-radius: var(--radius-xs);
+          background: var(--bg-tertiary);
+          border: 1px solid var(--border-subtle);
+          font-size: 0.75rem;
+          font-family: var(--font-sans);
+        }
+
+        .user-email-text {
+          color: var(--text-primary);
+          font-weight: 500;
+          max-width: 140px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .btn-logout {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.25rem;
+          background: none;
+          border: none;
+          color: var(--text-muted);
+          font-size: 0.72rem;
+          cursor: pointer;
+          padding: 0.1rem 0.25rem;
+          border-radius: 3px;
+          transition: color var(--transition-fast);
+        }
+
+        .btn-logout:hover {
+          color: var(--rose-primary);
         }
 
         /* Main Content */
@@ -632,7 +967,7 @@ export default function HomePage() {
           font-size: 0.95rem;
           color: var(--text-secondary);
           line-height: 1.6;
-          max-width: 620px;
+          max-width: 640px;
           margin: 0 auto;
         }
 
@@ -648,14 +983,14 @@ export default function HomePage() {
           transition: all var(--transition-fast);
         }
 
-        .upload-zone:hover,
-        .upload-zone.dragging {
-          border-color: var(--text-primary);
+        .upload-zone:hover {
+          border-color: var(--text-secondary);
           background: var(--bg-tertiary);
         }
 
-        .upload-zone.uploading {
-          cursor: default;
+        .upload-zone.dragging {
+          border-color: var(--text-primary);
+          background: var(--bg-tertiary);
         }
 
         .file-input-hidden {
@@ -666,7 +1001,7 @@ export default function HomePage() {
           display: flex;
           flex-direction: column;
           align-items: center;
-          gap: 0.85rem;
+          gap: 1rem;
         }
 
         .icon-wrap {
@@ -681,19 +1016,10 @@ export default function HomePage() {
           color: var(--text-secondary);
         }
 
-        :global(.spinner) {
-          animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-          from { transform: rotate(0deg); }
-          to { transform: rotate(360deg); }
-        }
-
         .upload-text-group {
           display: flex;
           flex-direction: column;
-          gap: 0.3rem;
+          gap: 0.35rem;
         }
 
         .upload-heading {
@@ -815,18 +1141,27 @@ export default function HomePage() {
         .summary-actions {
           display: flex;
           align-items: center;
-          gap: 0.5rem;
+          gap: 0.65rem;
           flex-shrink: 0;
         }
 
-        .btn-toggle {
+        .view-mode-group {
+          display: inline-flex;
+          background: var(--bg-primary);
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-xs);
+          padding: 2px;
+          gap: 2px;
+        }
+
+        .btn-view-tab {
           display: inline-flex;
           align-items: center;
           gap: 0.35rem;
-          padding: 0.35rem 0.65rem;
+          padding: 0.3rem 0.6rem;
           border-radius: var(--radius-xs);
-          background: var(--bg-primary);
-          border: 1px solid var(--border-subtle);
+          background: transparent;
+          border: none;
           font-size: 0.75rem;
           font-weight: 500;
           color: var(--text-secondary);
@@ -834,15 +1169,15 @@ export default function HomePage() {
           transition: all var(--transition-fast);
         }
 
-        .btn-toggle:hover {
+        .btn-view-tab:hover {
           color: var(--text-primary);
-          border-color: var(--border-medium);
         }
 
-        .btn-toggle.active {
-          background: var(--text-primary);
-          color: var(--bg-primary);
-          border-color: var(--text-primary);
+        .btn-view-tab.active {
+          background: var(--bg-secondary);
+          color: var(--text-primary);
+          font-weight: 600;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
         }
 
         .btn-icon-danger {
@@ -893,8 +1228,9 @@ export default function HomePage() {
           font-weight: 600;
         }
 
-        /* Page Viewer Container */
+        /* Page & Chunks Viewer Containers */
         .page-viewer-container,
+        .chunks-viewer-container,
         .json-debug-container {
           border: 1px solid var(--border-subtle);
           border-radius: var(--radius-md);
@@ -902,7 +1238,7 @@ export default function HomePage() {
           overflow: hidden;
         }
 
-        /* Tabs Bar */
+        /* Page Tabs Bar */
         .page-tabs-bar {
           display: flex;
           align-items: center;
@@ -953,12 +1289,193 @@ export default function HomePage() {
           opacity: 0.75;
         }
 
+        /* Chunks Toolbar */
+        .chunks-toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0.5rem 0.75rem;
+          background: var(--bg-tertiary);
+          border-bottom: 1px solid var(--border-subtle);
+          gap: 0.75rem;
+          flex-wrap: wrap;
+        }
+
+        .chunks-filter-tabs {
+          display: flex;
+          gap: 0.35rem;
+          overflow-x: auto;
+        }
+
+        .chunk-tab {
+          padding: 0.3rem 0.6rem;
+          border-radius: var(--radius-xs);
+          background: var(--bg-primary);
+          border: 1px solid var(--border-subtle);
+          font-size: 0.72rem;
+          font-family: var(--font-mono);
+          color: var(--text-secondary);
+          cursor: pointer;
+          white-space: nowrap;
+          transition: all var(--transition-fast);
+        }
+
+        .chunk-tab:hover {
+          color: var(--text-primary);
+          border-color: var(--border-medium);
+        }
+
+        .chunk-tab.active {
+          background: var(--text-primary);
+          color: var(--bg-primary);
+          border-color: var(--text-primary);
+          font-weight: 600;
+        }
+
+        .chunks-toolbar-right {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+
+        /* Chunks Metrics Bar */
+        .chunks-metrics-bar {
+          display: flex;
+          align-items: center;
+          gap: 1.25rem;
+          padding: 0.5rem 1rem;
+          background: var(--bg-primary);
+          border-bottom: 1px solid var(--border-subtle);
+          font-size: 0.72rem;
+          font-family: var(--font-mono);
+          color: var(--text-muted);
+          flex-wrap: wrap;
+        }
+
+        .chunk-metric {
+          display: flex;
+          align-items: center;
+          gap: 0.35rem;
+        }
+
+        .metric-val {
+          color: var(--text-primary);
+          font-weight: 600;
+        }
+
+        /* Chunks List */
+        .chunks-list {
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+          padding: 1rem;
+          max-height: 520px;
+          overflow-y: auto;
+          background: var(--bg-secondary);
+        }
+
+        .chunk-card {
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-sm);
+          background: var(--bg-primary);
+          overflow: hidden;
+          transition: border-color var(--transition-fast);
+        }
+
+        .chunk-card:hover {
+          border-color: var(--border-medium);
+        }
+
+        .chunk-card-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0.45rem 0.75rem;
+          background: var(--bg-tertiary);
+          border-bottom: 1px solid var(--border-subtle);
+          font-size: 0.72rem;
+          font-family: var(--font-mono);
+          gap: 0.5rem;
+          flex-wrap: wrap;
+        }
+
+        .chunk-header-left {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+        }
+
+        .chunk-index-badge {
+          font-weight: 600;
+          color: var(--text-primary);
+          background: var(--bg-secondary);
+          padding: 0.1rem 0.4rem;
+          border-radius: 3px;
+          border: 1px solid var(--border-subtle);
+        }
+
+        .chunk-page-badge {
+          color: var(--emerald-primary);
+          background: var(--emerald-subtle);
+          padding: 0.1rem 0.35rem;
+          border-radius: 3px;
+        }
+
+        .chunk-id-tag {
+          color: var(--text-muted);
+          font-size: 0.68rem;
+        }
+
+        .chunk-header-right {
+          display: flex;
+          align-items: center;
+          gap: 0.6rem;
+        }
+
+        .chunk-stat {
+          color: var(--text-muted);
+        }
+
+        .btn-copy-chunk {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.3rem;
+          padding: 0.15rem 0.45rem;
+          border-radius: 3px;
+          background: var(--bg-primary);
+          border: 1px solid var(--border-subtle);
+          font-size: 0.68rem;
+          font-family: var(--font-mono);
+          color: var(--text-secondary);
+          cursor: pointer;
+          transition: all var(--transition-fast);
+        }
+
+        .btn-copy-chunk:hover {
+          color: var(--text-primary);
+          border-color: var(--border-medium);
+        }
+
+        .chunk-card-body {
+          padding: 0.85rem;
+        }
+
+        .chunk-text-pre {
+          margin: 0;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-family: var(--font-mono);
+          font-size: 0.8rem;
+          line-height: 1.6;
+          color: var(--text-primary);
+        }
+
         /* Search Filter */
         .search-filter-wrap {
           position: relative;
           display: flex;
           align-items: center;
-          width: 180px;
+          width: 170px;
           flex-shrink: 0;
         }
 
@@ -1054,7 +1571,7 @@ export default function HomePage() {
         }
 
         .no-matches-box {
-          padding: 2rem;
+          padding: 2.5rem;
           text-align: center;
           color: var(--text-muted);
           font-size: 0.82rem;
@@ -1100,8 +1617,10 @@ export default function HomePage() {
           .upload-zone { padding: 2rem 1rem; }
           .server-badge { display: none; }
           .doc-summary-bar { flex-direction: column; align-items: flex-start; }
-          .summary-actions { width: 100%; justify-content: flex-end; }
+          .summary-actions { width: 100%; justify-content: space-between; }
           .page-tabs-bar { flex-direction: column; align-items: flex-start; }
+          .chunks-toolbar { flex-direction: column; align-items: flex-start; }
+          .chunks-toolbar-right { width: 100%; justify-content: space-between; }
           .search-filter-wrap { width: 100%; }
         }
       `}</style>

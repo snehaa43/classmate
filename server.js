@@ -191,6 +191,126 @@ function cleanExtractedText(rawText) {
   return text.trim();
 }
 
+// ============================================================================
+// CHUNKING PIPELINE
+// Splits cleaned page text into semantic, overlapping chunks
+// ============================================================================
+function chunkText(text, options = {}) {
+  if (!text || typeof text !== 'string') return [];
+  const raw = text.trim();
+  if (raw.length === 0) return [];
+
+  const chunkSize = options.chunkSize || 500;
+  const chunkOverlap = Math.min(options.chunkOverlap || 50, Math.floor(chunkSize / 2));
+  const separators = options.separators || ['\n\n', '\n', '. ', '? ', '! ', '; ', ', ', ' ', ''];
+
+  if (raw.length <= chunkSize) {
+    const words = raw.split(/\s+/).filter(Boolean);
+    return [{
+      id: `chunk_${Date.now()}_0`,
+      chunkIndex: 0,
+      text: raw,
+      charCount: raw.length,
+      wordCount: words.length,
+      tokenEstimate: Math.ceil(raw.length / 4)
+    }];
+  }
+
+  function splitHierarchy(content, sepIndex) {
+    if (content.length <= chunkSize || sepIndex >= separators.length) {
+      if (content.length <= chunkSize) return [content];
+      const pieces = [];
+      const step = Math.max(1, chunkSize - chunkOverlap);
+      for (let i = 0; i < content.length; i += step) {
+        pieces.push(content.substring(i, i + chunkSize));
+      }
+      return pieces;
+    }
+
+    const sep = separators[sepIndex];
+    const parts = sep === '' ? Array.from(content) : content.split(sep);
+    const docs = [];
+    let currentPiece = [];
+    let currentLen = 0;
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const partLen = part.length + (sep.length || 0);
+
+      if (part.length > chunkSize) {
+        if (currentPiece.length > 0) {
+          docs.push(currentPiece.join(sep));
+          currentPiece = [];
+          currentLen = 0;
+        }
+        const subPieces = splitHierarchy(part, sepIndex + 1);
+        docs.push(...subPieces);
+        continue;
+      }
+
+      if (currentLen + partLen > chunkSize && currentPiece.length > 0) {
+        docs.push(currentPiece.join(sep));
+        let overlapLen = 0;
+        const overlapPiece = [];
+        for (let j = currentPiece.length - 1; j >= 0; j--) {
+          overlapPiece.unshift(currentPiece[j]);
+          overlapLen += currentPiece[j].length + (sep.length || 0);
+          if (overlapLen >= chunkOverlap) break;
+        }
+        currentPiece = overlapPiece;
+        currentLen = overlapLen;
+      }
+
+      currentPiece.push(part);
+      currentLen += partLen;
+    }
+
+    if (currentPiece.length > 0) {
+      docs.push(currentPiece.join(sep));
+    }
+    return docs;
+  }
+
+  const rawSegments = splitHierarchy(raw, 0);
+  const chunks = [];
+  let chunkCounter = 0;
+
+  for (const seg of rawSegments) {
+    const trimmed = seg.trim();
+    if (trimmed.length > 0) {
+      const words = trimmed.split(/\s+/).filter(Boolean);
+      chunks.push({
+        id: `chunk_${Date.now()}_${chunkCounter}`,
+        chunkIndex: chunkCounter++,
+        text: trimmed,
+        charCount: trimmed.length,
+        wordCount: words.length,
+        tokenEstimate: Math.ceil(trimmed.length / 4)
+      });
+    }
+  }
+
+  return chunks;
+}
+
+function chunkPages(pages, options) {
+  const allChunks = [];
+  let globalIndex = 0;
+  for (const page of pages) {
+    if (!page.text || page.text.trim().length === 0) continue;
+    const pageChunks = chunkText(page.text, options);
+    for (const chunk of pageChunks) {
+      allChunks.push({
+        ...chunk,
+        id: `chunk_p${page.pageNumber}_${chunk.chunkIndex}`,
+        pageNumber: page.pageNumber,
+        chunkIndex: globalIndex++
+      });
+    }
+  }
+  return allChunks;
+}
+
       // Step 7: Parse PDF and extract page-by-page text
       try {
         const parser = new PDFParse({
@@ -247,13 +367,16 @@ function cleanExtractedText(rawText) {
           await parser.destroy();
         } catch (_) {}
 
+        // Step 8: Chunk Pages
+        const chunks = chunkPages(pages);
+
         const sizeFormatted = uploadedFile.size > 1024 * 1024
           ? `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`
           : `${Math.round(uploadedFile.size / 1024)} KB`;
 
         const docId = `pdf_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
-        // Step 8: Store extracted text temporarily in memory Map
+        // Step 9: Store extracted text temporarily in memory Map
         const storedDoc = saveTemporaryDoc({
           id: docId,
           filename: uploadedFile.name,
@@ -263,14 +386,15 @@ function cleanExtractedText(rawText) {
           totalWords,
           totalChars,
           pages,
+          chunks,
           uploadedAt: new Date().toISOString()
         });
 
-        // Step 9: Return JSON payload with extracted pages
+        // Step 10: Return JSON payload with extracted pages & chunks
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           success: true,
-          message: `PDF parsed successfully! Extracted ${pages.length} page(s).`,
+          message: `PDF parsed successfully! Extracted ${pages.length} page(s) and ${chunks.length} chunk(s).`,
           document: storedDoc
         }));
 

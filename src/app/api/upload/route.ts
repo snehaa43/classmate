@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { parsePdfPageByPage, tempPdfStore } from '@/lib/pdfParser';
+import { parsePdfPageByPage, tempPdfStore, chunkPages } from '@/lib/pdfParser';
 
 // Action: Define maximum allowable file size (50MB in bytes)
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
@@ -95,12 +95,17 @@ export async function POST(request: Request) {
     }
 
     // ------------------------------------------------------------------------
-    // ACTION 6: Parse PDF and Extract Text Page by Page
+    // ACTION 6: Parse PDF, Clean and Extract Text Page by Page
     // ------------------------------------------------------------------------
     const { pages, totalPages, totalWords, totalChars } = await parsePdfPageByPage(buffer);
 
     // ------------------------------------------------------------------------
-    // ACTION 7: Format Document Metadata
+    // ACTION 7: Chunk Extracted Text Page by Page into Semantic Chunks
+    // ------------------------------------------------------------------------
+    const chunks = chunkPages(pages);
+
+    // ------------------------------------------------------------------------
+    // ACTION 8: Format Document Metadata
     // ------------------------------------------------------------------------
     const docId = `pdf_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const sizeFormatted = file.size > 1024 * 1024
@@ -108,7 +113,7 @@ export async function POST(request: Request) {
       : `${Math.round(file.size / 1024)} KB`;
 
     // ------------------------------------------------------------------------
-    // ACTION 8: Store Extracted Text Temporarily in In-Memory Cache (TTL: 1 hour)
+    // ACTION 9: Store Extracted Text & Chunks in In-Memory Cache (TTL: 1 hour)
     // ------------------------------------------------------------------------
     const storedDocument = tempPdfStore.save({
       id: docId,
@@ -119,15 +124,16 @@ export async function POST(request: Request) {
       totalWords,
       totalChars,
       pages,
+      chunks,
       uploadedAt: new Date().toISOString()
     });
 
     // ------------------------------------------------------------------------
-    // ACTION 9: Return JSON Response with Extracted Pages for Testing & Display
+    // ACTION 10: Return JSON Response with Extracted Pages & Chunks
     // ------------------------------------------------------------------------
     return NextResponse.json({
       success: true,
-      message: `PDF parsed successfully! Extracted ${totalPages} page(s) with ${totalWords.toLocaleString()} words.`,
+      message: `PDF parsed successfully! Extracted ${totalPages} page(s), ${totalWords.toLocaleString()} words, and generated ${chunks.length} chunks.`,
       document: storedDocument
     });
 

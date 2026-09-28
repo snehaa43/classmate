@@ -556,6 +556,10 @@
             </div>
           </div>
           <div class="summary-actions">
+            <div class="view-mode-group">
+              <button class="btn-view-tab active" id="view-pages-btn" title="View Pages"><i class="fa-regular fa-file-lines"></i> <span id="pages-tab-label">Pages</span></button>
+              <button class="btn-view-tab" id="view-chunks-btn" title="View Generated Chunks"><i class="fa-solid fa-scissors"></i> <span id="chunks-tab-label">Chunks</span></button>
+            </div>
             <button class="btn-icon-danger" id="clear-btn" title="Clear Document"><i class="fa-solid fa-trash-can"></i></button>
           </div>
         </div>
@@ -565,9 +569,12 @@
           <span>In-Memory Doc ID: <code id="store-id">pdf_123</code></span>
           <span>•</span>
           <span id="store-time">TTL: 1 hour in RAM</span>
+          <span>•</span>
+          <span id="store-chunks-badge">Chunks: 0</span>
         </div>
 
-        <div class="page-viewer-container">
+        <!-- Mode 1: Pages Viewer -->
+        <div class="page-viewer-container" id="pages-container">
           <div class="page-tabs-bar">
             <div class="page-tabs-scroll" id="page-tabs"></div>
           </div>
@@ -579,6 +586,23 @@
             <pre class="extracted-text-pre"><code id="page-text">Extracted text content will appear here...</code></pre>
           </div>
         </div>
+
+        <!-- Mode 2: Chunks Viewer -->
+        <div class="chunks-viewer-container" id="chunks-container" style="display: none;">
+          <div class="chunks-toolbar">
+            <div class="chunks-filter-tabs" id="chunk-page-tabs"></div>
+            <div class="chunks-toolbar-right">
+              <button class="btn-copy" id="copy-all-chunks-btn"><i class="fa-regular fa-copy"></i> Copy Chunks (JSON)</button>
+            </div>
+          </div>
+          <div class="chunks-metrics-bar" id="chunks-metrics">
+            <div class="chunk-metric"><span class="metric-label">Total Chunks:</span> <span class="metric-val" id="metric-total-chunks">0</span></div>
+            <div class="chunk-metric"><span class="metric-label">Estimated Tokens:</span> <span class="metric-val" id="metric-total-tokens">0</span></div>
+            <div class="chunk-metric"><span class="metric-label">Configuration:</span> <span class="metric-val">Size: 500c • Overlap: 50c</span></div>
+          </div>
+          <div class="chunks-list" id="chunks-list"></div>
+        </div>
+
       </div>
 
     </div>
@@ -607,6 +631,7 @@
     const docFilename = document.getElementById('doc-filename');
     const docStats = document.getElementById('doc-stats');
     const storeId = document.getElementById('store-id');
+    const storeChunksBadge = document.getElementById('store-chunks-badge');
     const pageTabs = document.getElementById('page-tabs');
     const pageIndicator = document.getElementById('page-indicator');
     const pageText = document.getElementById('page-text');
@@ -614,9 +639,22 @@
     const clearBtn = document.getElementById('clear-btn');
     const uploadHeading = document.getElementById('upload-heading');
     const iconWrap = document.getElementById('icon-wrap');
+    const viewPagesBtn = document.getElementById('view-pages-btn');
+    const viewChunksBtn = document.getElementById('view-chunks-btn');
+    const pagesContainer = document.getElementById('pages-container');
+    const chunksContainer = document.getElementById('chunks-container');
+    const chunkPageTabs = document.getElementById('chunk-page-tabs');
+    const chunksList = document.getElementById('chunks-list');
+    const metricTotalChunks = document.getElementById('metric-total-chunks');
+    const metricTotalTokens = document.getElementById('metric-total-tokens');
+    const copyAllChunksBtn = document.getElementById('copy-all-chunks-btn');
+    const pagesTabLabel = document.getElementById('pages-tab-label');
+    const chunksTabLabel = document.getElementById('chunks-tab-label');
 
     let currentDoc = null;
     let selectedPageIndex = 0;
+    let currentChunkFilter = -1;
+    let activeMode = 'pages';
     let isUploading = false;
 
     // Theme Toggle
@@ -626,6 +664,17 @@
       document.documentElement.setAttribute('data-theme', next);
       themeBtn.innerHTML = next === 'dark' ? '<i class="fa-solid fa-sun"></i>' : '<i class="fa-solid fa-moon"></i>';
     });
+
+    viewPagesBtn.addEventListener('click', () => switchViewMode('pages'));
+    viewChunksBtn.addEventListener('click', () => switchViewMode('chunks'));
+
+    function switchViewMode(mode) {
+      activeMode = mode;
+      viewPagesBtn.classList.toggle('active', mode === 'pages');
+      viewChunksBtn.classList.toggle('active', mode === 'chunks');
+      pagesContainer.style.display = mode === 'pages' ? 'block' : 'none';
+      chunksContainer.style.display = mode === 'chunks' ? 'block' : 'none';
+    }
 
     uploadZone.addEventListener('click', () => {
       if (!isUploading) fileInput.click();
@@ -663,15 +712,19 @@
       showToast(`Page ${selectedPageIndex + 1} text copied to clipboard!`, 'success');
     });
 
+    copyAllChunksBtn.addEventListener('click', () => {
+      if (!currentDoc || !currentDoc.chunks) return;
+      navigator.clipboard.writeText(JSON.stringify(currentDoc.chunks, null, 2));
+      showToast('All chunks copied as JSON!', 'success');
+    });
+
     async function handleUpload(file) {
-      // Step 1: Validate file format
       const isPdf = file.name.toLowerCase().endsWith('.pdf');
       if (!isPdf) {
         showToast('Validation Error: Only PDF files (.pdf) are allowed.', 'error');
         return;
       }
 
-      // Step 2: Validate file size
       if (file.size === 0) {
         showToast('Validation Error: File is empty (0 bytes).', 'error');
         return;
@@ -683,17 +736,16 @@
         return;
       }
 
-      // Step 3: Send via FormData to backend
       const formData = new FormData();
       formData.append('file', file);
 
       isUploading = true;
       progressOverlay.style.display = 'flex';
-      progressName.textContent = 'Parsing & Extracting Pages...';
+      progressName.textContent = 'Parsing, Cleaning & Chunking...';
       progressPercent.textContent = '30%';
       progressFill.style.width = '30%';
       iconWrap.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
-      uploadHeading.textContent = 'Sending PDF to backend...';
+      uploadHeading.textContent = 'Processing PDF...';
 
       try {
         const res = await fetch('/api/upload', {
@@ -710,7 +762,6 @@
         try {
           response = JSON.parse(responseText);
         } catch (parseErr) {
-          console.error('JSON Parse Error:', parseErr, 'Raw response:', responseText);
           isUploading = false;
           progressOverlay.style.display = 'none';
           iconWrap.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i>';
@@ -727,7 +778,7 @@
         if (res.ok && response && response.success && response.document) {
           currentDoc = response.document;
           renderExtractedDoc();
-          showToast(response.message || `Extracted ${currentDoc.totalPages || 1} page(s)!`, 'success');
+          showToast(response.message || `Extracted ${currentDoc.totalPages || 1} page(s) and generated ${currentDoc.chunks?.length || 0} chunk(s)!`, 'success');
         } else {
           const errorMsg = response?.error || `Server responded with status ${res.status}`;
           showToast(`Backend Error: ${errorMsg}`, 'error');
@@ -743,9 +794,16 @@
 
     function renderExtractedDoc() {
       if (!currentDoc) return;
+      const chunks = currentDoc.chunks || [];
+      const totalTokens = chunks.reduce((s, c) => s + (c.tokenEstimate || 0), 0);
+
       docFilename.textContent = currentDoc.filename;
-      docStats.textContent = `${currentDoc.sizeFormatted} • ${currentDoc.totalPages} Page(s) • ${currentDoc.totalWords.toLocaleString()} Words`;
+      docStats.textContent = `${currentDoc.sizeFormatted} • ${currentDoc.totalPages} Page(s) • ${currentDoc.totalWords.toLocaleString()} Words • ${chunks.length} Chunks`;
       storeId.textContent = currentDoc.id;
+      storeChunksBadge.textContent = `Chunks: ${chunks.length} (~${totalTokens.toLocaleString()} tokens)`;
+
+      pagesTabLabel.textContent = `Pages (${currentDoc.totalPages})`;
+      chunksTabLabel.textContent = `Chunks (${chunks.length})`;
 
       // Render Page Tabs
       pageTabs.innerHTML = '';
@@ -755,21 +813,100 @@
         btn.innerHTML = `Page ${p.pageNumber} <span style="font-size: 0.68rem; opacity: 0.75;">(${p.wordCount}w)</span>`;
         btn.addEventListener('click', () => {
           selectedPageIndex = idx;
-          document.querySelectorAll('.page-tab').forEach((t, i) => t.classList.toggle('active', i === idx));
+          document.querySelectorAll('#page-tabs .page-tab').forEach((t, i) => t.classList.toggle('active', i === idx));
           showPage(idx);
         });
         pageTabs.appendChild(btn);
       });
 
+      // Render Chunk Filter Tabs & Metrics
+      metricTotalChunks.textContent = chunks.length;
+      metricTotalTokens.textContent = `~${totalTokens.toLocaleString()}`;
+
+      chunkPageTabs.innerHTML = '';
+      const allTab = document.createElement('button');
+      allTab.className = 'chunk-tab active';
+      allTab.textContent = `All Pages (${chunks.length})`;
+      allTab.addEventListener('click', () => {
+        currentChunkFilter = -1;
+        document.querySelectorAll('.chunk-tab').forEach(t => t.classList.remove('active'));
+        allTab.classList.add('active');
+        renderChunksList();
+      });
+      chunkPageTabs.appendChild(allTab);
+
+      currentDoc.pages.forEach((p) => {
+        const count = chunks.filter(c => c.pageNumber === p.pageNumber).length;
+        const pTab = document.createElement('button');
+        pTab.className = 'chunk-tab';
+        pTab.textContent = `Page ${p.pageNumber} (${count})`;
+        pTab.addEventListener('click', () => {
+          currentChunkFilter = p.pageNumber;
+          document.querySelectorAll('.chunk-tab').forEach(t => t.classList.remove('active'));
+          pTab.classList.add('active');
+          renderChunksList();
+        });
+        chunkPageTabs.appendChild(pTab);
+      });
+
       showPage(0);
+      renderChunksList();
+      switchViewMode('pages');
       resultsWrapper.style.display = 'flex';
     }
 
     function showPage(idx) {
       if (!currentDoc || !currentDoc.pages[idx]) return;
       const page = currentDoc.pages[idx];
-      pageIndicator.innerHTML = `<i class="fa-solid fa-layer-group"></i> Viewing Page ${page.pageNumber} of ${currentDoc.totalPages} — <strong>${page.wordCount} words</strong> (${page.charCount} chars)`;
+      pageIndicator.innerHTML = `<i class="fa-solid fa-layer-group"></i> Viewing Page ${page.pageNumber} of ${currentDoc.totalPages} — <strong>${page.wordCount} words</strong> (${page.charCount} chars) • Cleaned`;
       pageText.textContent = page.text;
+    }
+
+    function renderChunksList() {
+      if (!currentDoc || !currentDoc.chunks) return;
+      chunksList.innerHTML = '';
+      const filtered = currentChunkFilter === -1
+        ? currentDoc.chunks
+        : currentDoc.chunks.filter(c => c.pageNumber === currentChunkFilter);
+
+      if (filtered.length === 0) {
+        chunksList.innerHTML = '<div class="no-matches-box"><p>No chunks generated for this selection.</p></div>';
+        return;
+      }
+
+      filtered.forEach((c) => {
+        const card = document.createElement('div');
+        card.className = 'chunk-card';
+        card.innerHTML = `
+          <div class="chunk-card-header">
+            <div class="chunk-header-left">
+              <span class="chunk-index-badge">Chunk #${c.chunkIndex + 1}</span>
+              <span class="chunk-page-badge">Page ${c.pageNumber || 1}</span>
+              <code class="chunk-id-tag">${c.id}</code>
+            </div>
+            <div class="chunk-header-right">
+              <span class="chunk-stat">${c.wordCount} words</span>
+              <span class="chunk-stat">${c.charCount} chars</span>
+              <span class="chunk-stat">~${c.tokenEstimate} tokens</span>
+              <button class="btn-copy-chunk" data-chunk-id="${c.id}"><i class="fa-regular fa-copy"></i> Copy</button>
+            </div>
+          </div>
+          <div class="chunk-card-body">
+            <pre class="chunk-text-pre"><code>${escapeHtml(c.text)}</code></pre>
+          </div>
+        `;
+
+        card.querySelector('.btn-copy-chunk').addEventListener('click', () => {
+          navigator.clipboard.writeText(c.text);
+          showToast(`Chunk #${c.chunkIndex + 1} copied!`, 'success');
+        });
+
+        chunksList.appendChild(card);
+      });
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     }
 
     function showToast(msg, type = 'info') {

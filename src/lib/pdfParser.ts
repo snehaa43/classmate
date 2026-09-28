@@ -23,9 +23,13 @@ export interface TemporaryPdfDocument {
   totalWords: number;       // Total words across all pages
   totalChars: number;       // Total characters across all pages
   pages: ParsedPage[];      // Page-by-page extracted text array
+  chunks?: import('./chunker').TextChunk[]; // Optional pre-computed semantic chunks
   uploadedAt: string;       // ISO timestamp of upload
   expiresAt: string;        // Expiration timestamp (e.g. 1 hour TTL)
 }
+
+// Re-export chunking types and functions for unified access
+export * from './chunker';
 
 /**
  * ============================================================================
