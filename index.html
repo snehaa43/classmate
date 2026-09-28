@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Classmate — PDF Upload Studio</title>
-  <meta name="description" content="A minimal PDF upload interface for Classmate. Drop study materials, inspect extracted summaries, and organize course documents." />
+  <title>Classmate — PDF Upload</title>
+  <meta name="description" content="A minimal PDF upload interface for Classmate. Drop study materials and notes." />
   
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -64,7 +64,7 @@
 
     .container {
       width: 100%;
-      max-width: 1080px;
+      max-width: 680px;
       margin: 0 auto;
       padding: 0 1.5rem;
     }
@@ -103,16 +103,6 @@
       letter-spacing: -0.03em;
     }
 
-    .brand-badge {
-      font-size: 0.72rem;
-      font-family: var(--font-mono);
-      padding: 0.1rem 0.4rem;
-      border-radius: var(--radius-xs);
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-muted);
-    }
-
     .theme-btn {
       width: 32px;
       height: 32px;
@@ -128,25 +118,36 @@
 
     /* Main Content */
     .main-content {
-      padding-top: 3.5rem;
-      padding-bottom: 4rem;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 0;
+    }
+
+    .content-container {
       display: flex;
       flex-direction: column;
-      gap: 2rem;
-      flex: 1;
+      gap: 1.75rem;
+    }
+
+    .intro-section {
+      text-align: center;
     }
 
     .main-title {
-      font-size: 2rem;
+      font-size: 2.4rem;
       font-weight: 700;
-      letter-spacing: -0.035em;
-      margin-bottom: 0.5rem;
+      letter-spacing: -0.04em;
+      margin-bottom: 0.6rem;
     }
 
     .main-desc {
-      font-size: 0.95rem;
+      font-size: 1rem;
       color: var(--text-secondary);
-      max-width: 620px;
+      max-width: 540px;
+      margin: 0 auto;
+      line-height: 1.6;
     }
 
     /* Upload Zone */
@@ -155,7 +156,7 @@
       border: 1px dashed var(--border-medium);
       border-radius: var(--radius-md);
       background: var(--bg-secondary);
-      padding: 2.25rem 1.5rem;
+      padding: 3.5rem 2rem;
       text-align: center;
       cursor: pointer;
       transition: all var(--transition-fast);
@@ -174,12 +175,12 @@
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 0.75rem;
+      gap: 0.85rem;
     }
 
     .icon-wrap {
-      width: 44px;
-      height: 44px;
+      width: 48px;
+      height: 48px;
       border-radius: var(--radius-sm);
       background: var(--bg-primary);
       border: 1px solid var(--border-subtle);
@@ -190,14 +191,20 @@
       font-size: 1.25rem;
     }
 
+    .upload-text-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
     .upload-heading {
-      font-size: 0.95rem;
+      font-size: 1rem;
       font-weight: 600;
       color: var(--text-primary);
     }
 
     .upload-hint {
-      font-size: 0.78rem;
+      font-size: 0.82rem;
       color: var(--text-muted);
     }
 
@@ -218,14 +225,14 @@
       display: flex;
       justify-content: space-between;
       width: 100%;
-      max-width: 400px;
+      max-width: 360px;
       font-size: 0.82rem;
       font-family: var(--font-mono);
     }
 
     .progress-bar-track {
       width: 100%;
-      max-width: 400px;
+      max-width: 360px;
       height: 5px;
       background: var(--border-subtle);
       border-radius: 3px;
@@ -239,248 +246,46 @@
       transition: width 0.15s ease;
     }
 
-    /* Dashboard Grid */
-    .dashboard-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.5rem;
-    }
-
-    .panel {
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-md);
-      background: var(--bg-secondary);
-      padding: 1.25rem;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .panel-header {
-      display: flex;
+    /* Uploaded Status Card */
+    .uploaded-status-card {
+      display: none;
       align-items: center;
       justify-content: space-between;
-      padding-bottom: 0.85rem;
-      border-bottom: 1px solid var(--border-subtle);
-      margin-bottom: 1rem;
-    }
-
-    .panel-title {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.88rem;
-      font-weight: 600;
-    }
-
-    .btn-text {
-      background: none;
-      border: none;
-      font-size: 0.78rem;
-      color: var(--text-secondary);
-      font-weight: 500;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-    }
-
-    .btn-text:hover { color: var(--text-primary); }
-
-    .files-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .file-item {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      padding: 0.75rem 0.85rem;
+      padding: 0.85rem 1rem;
       border-radius: var(--radius-sm);
-      background: var(--bg-primary);
-      border: 1px solid var(--border-subtle);
-      cursor: pointer;
-      transition: all var(--transition-fast);
-    }
-
-    .file-item:hover {
-      border-color: var(--border-medium);
-      background: var(--bg-tertiary);
-    }
-
-    .file-item.active {
-      border-color: var(--text-primary);
-      background: var(--bg-tertiary);
-    }
-
-    .file-icon {
-      width: 32px;
-      height: 32px;
-      border-radius: var(--radius-xs);
       background: var(--bg-secondary);
       border: 1px solid var(--border-subtle);
+    }
+
+    .uploaded-info {
       display: flex;
       align-items: center;
-      justify-content: center;
-      color: var(--text-secondary);
-      flex-shrink: 0;
-    }
-
-    .file-details {
-      flex: 1;
+      gap: 0.6rem;
       min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 0.2rem;
     }
 
-    .file-name {
-      font-size: 0.82rem;
+    .uploaded-name {
+      font-size: 0.85rem;
       font-weight: 500;
+      color: var(--text-primary);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .file-meta {
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      font-size: 0.7rem;
+    .uploaded-size {
+      font-size: 0.75rem;
       font-family: var(--font-mono);
       color: var(--text-muted);
     }
 
-    .action-btn {
-      width: 28px;
-      height: 28px;
-      border-radius: var(--radius-xs);
-      border: none;
-      background: transparent;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      color: var(--text-muted);
-      cursor: pointer;
-    }
-
-    .action-btn:hover {
-      color: var(--rose-primary);
-      background: var(--rose-subtle);
-    }
-
-    /* Preview Panel */
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
+    .status-tag {
       font-size: 0.72rem;
       font-family: var(--font-mono);
-      color: var(--emerald-primary);
-      background: var(--emerald-subtle);
       padding: 0.15rem 0.45rem;
       border-radius: var(--radius-xs);
-    }
-
-    .preview-body {
-      display: flex;
-      flex-direction: column;
-      gap: 1.25rem;
-    }
-
-    .doc-title {
-      font-size: 1.05rem;
-      font-weight: 600;
-      word-break: break-all;
-    }
-
-    .meta-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 0.5rem;
-    }
-
-    .meta-card {
-      padding: 0.65rem 0.75rem;
-      border-radius: var(--radius-xs);
-      background: var(--bg-primary);
-      border: 1px solid var(--border-subtle);
-      display: flex;
-      flex-direction: column;
-      gap: 0.15rem;
-    }
-
-    .meta-label {
-      font-size: 0.68rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-    }
-
-    .meta-val {
-      font-family: var(--font-mono);
-      font-size: 0.85rem;
-      font-weight: 600;
-    }
-
-    .summary-box, .topics-box {
-      display: flex;
-      flex-direction: column;
-      gap: 0.45rem;
-    }
-
-    .section-label {
-      font-size: 0.75rem;
-      font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-
-    .summary-text {
-      font-size: 0.85rem;
-      color: var(--text-secondary);
-      line-height: 1.55;
-      background: var(--bg-primary);
-      border: 1px solid var(--border-subtle);
-      border-radius: var(--radius-xs);
-      padding: 0.85rem;
-    }
-
-    .topic-tags {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.4rem;
-    }
-
-    .topic-tag {
-      font-size: 0.75rem;
-      padding: 0.25rem 0.55rem;
-      border-radius: var(--radius-xs);
-      background: var(--bg-primary);
-      border: 1px solid var(--border-subtle);
-      color: var(--text-secondary);
-    }
-
-    .btn-primary {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      padding: 0.65rem 1.25rem;
-      border-radius: var(--radius-sm);
-      background: var(--text-primary);
-      color: var(--bg-primary);
-      border: 1px solid var(--text-primary);
-      font-weight: 500;
-      font-size: 0.88rem;
-      cursor: pointer;
-      text-decoration: none;
-      transition: all var(--transition-fast);
-    }
-
-    .btn-primary:hover {
-      background: var(--text-secondary);
+      background: var(--emerald-subtle);
+      color: var(--emerald-primary);
     }
 
     .toast-alert {
@@ -499,8 +304,9 @@
       z-index: 1000;
     }
 
-    @media (max-width: 768px) {
-      .dashboard-grid { grid-template-columns: 1fr; }
+    @media (max-width: 640px) {
+      .main-title { font-size: 1.85rem; }
+      .upload-zone { padding: 2.5rem 1.25rem; }
     }
   </style>
 </head>
@@ -510,7 +316,6 @@
       <a href="#" class="brand">
         <span class="brand-dot"></span>
         <span class="brand-name">classmate</span>
-        <span class="brand-badge">PDF Studio</span>
       </a>
       <button class="theme-btn" id="theme-btn" title="Toggle Theme">
         <i class="fa-solid fa-sun"></i>
@@ -518,91 +323,44 @@
     </div>
   </header>
 
-  <main class="container main-content">
-    <div class="intro-section">
-      <h1 class="main-title">Upload Study PDFs</h1>
-      <p className="main-desc">
-        Drop course syllabus, lecture slides, research papers, or notes. Classmate indexes text into structured study summaries.
-      </p>
-    </div>
-
-    <!-- Dropzone -->
-    <div class="upload-zone" id="upload-zone">
-      <input type="file" id="file-input" class="file-input-hidden" accept=".pdf" />
-      <div class="upload-zone-content">
-        <div class="icon-wrap"><i class="fa-solid fa-cloud-arrow-up"></i></div>
-        <div class="upload-text-group">
-          <h3 class="upload-heading">Click to browse or drop your PDF here</h3>
-          <p class="upload-hint">Supports PDF files up to 50MB • Text, Scanned OCR & Slides</p>
-        </div>
+  <main class="main-content">
+    <div class="container content-container">
+      <div class="intro-section">
+        <h1 class="main-title">Upload Study PDF</h1>
+        <p class="main-desc">
+          Drop your course notes, textbook chapters, or lecture slides to extract summaries and study materials.
+        </p>
       </div>
-      <div class="upload-progress-overlay" id="progress-overlay">
-        <div class="progress-info">
-          <span id="progress-name">Uploading...</span>
-          <span id="progress-percent">0%</span>
-        </div>
-        <div class="progress-bar-track">
-          <div class="progress-bar-fill" id="progress-fill"></div>
-        </div>
-      </div>
-    </div>
 
-    <div class="dashboard-grid">
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title"><i class="fa-solid fa-book-open"></i> <span>Uploaded Documents (2)</span></div>
-          <button class="btn-text" id="add-btn"><i class="fa-solid fa-folder-plus"></i> Add PDF</button>
-        </div>
-        <div class="files-list" id="files-list">
-          <div class="file-item active" data-id="1">
-            <div class="file-icon"><i class="fa-solid fa-file-pdf"></i></div>
-            <div class="file-details">
-              <span class="file-name">CS101_Data_Structures_Algorithms.pdf</span>
-              <div class="file-meta"><span>2.4 MB</span><span>•</span><span>28 Pages</span><span>•</span><span>Just now</span></div>
-            </div>
-            <button class="action-btn delete-btn" title="Delete"><i class="fa-solid fa-trash-can"></i></button>
+      <!-- Dropzone -->
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="file-input" class="file-input-hidden" accept=".pdf" />
+        <div class="upload-zone-content">
+          <div class="icon-wrap"><i class="fa-solid fa-cloud-arrow-up"></i></div>
+          <div class="upload-text-group">
+            <h3 class="upload-heading">Click to browse or drop your PDF here</h3>
+            <p class="upload-hint">Supports PDF files up to 50MB</p>
           </div>
-          <div class="file-item" data-id="2">
-            <div class="file-icon"><i class="fa-solid fa-file-pdf"></i></div>
-            <div class="file-details">
-              <span class="file-name">Bio204_Cellular_Respiration_Guide.pdf</span>
-              <div class="file-meta"><span>4.1 MB</span><span>•</span><span>42 Pages</span><span>•</span><span>2 hours ago</span></div>
-            </div>
-            <button class="action-btn delete-btn" title="Delete"><i class="fa-solid fa-trash-can"></i></button>
+        </div>
+        <div class="upload-progress-overlay" id="progress-overlay">
+          <div class="progress-info">
+            <span id="progress-name">Uploading...</span>
+            <span id="progress-percent">0%</span>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progress-fill"></div>
           </div>
         </div>
       </div>
 
-      <div class="panel">
-        <div class="panel-header">
-          <div class="panel-title"><i class="fa-solid fa-circle-check text-emerald"></i> <span>Document Overview</span></div>
-          <span class="status-badge"><i class="fa-solid fa-check"></i> Indexed</span>
+      <!-- Uploaded Status Pill -->
+      <div class="uploaded-status-card" id="status-card">
+        <div class="uploaded-info">
+          <i class="fa-solid fa-file-circle-check" style="color: var(--emerald-primary)"></i>
+          <span class="uploaded-name" id="card-name">Document.pdf</span>
+          <span class="uploaded-size" id="card-size">(2.4 MB)</span>
         </div>
-        <div class="preview-body">
-          <h3 class="doc-title" id="preview-title">CS101_Data_Structures_Algorithms.pdf</h3>
-          <div class="meta-grid">
-            <div class="meta-card"><span class="meta-label">Total Pages</span><span class="meta-val" id="preview-pages">28</span></div>
-            <div class="meta-card"><span class="meta-label">File Size</span><span class="meta-val" id="preview-size">2.4 MB</span></div>
-            <div class="meta-card"><span class="meta-label">Est. Read Time</span><span class="meta-val" id="preview-time">70 min</span></div>
-            <div class="meta-card"><span class="meta-label">OCR Status</span><span class="meta-val" style="color: var(--emerald-primary)">Verified</span></div>
-          </div>
-          <div class="summary-box">
-            <span class="section-label">Summary & Extract</span>
-            <p class="summary-text" id="preview-summary">Comprehensive lecture notes covering Binary Search Trees, Graph Traversals (BFS/DFS), Hash Maps, and Big-O Time Complexity analysis.</p>
-          </div>
-          <div class="topics-box">
-            <span class="section-label">Extracted Key Topics</span>
-            <div class="topic-tags" id="preview-topics">
-              <span class="topic-tag">Binary Trees</span>
-              <span class="topic-tag">Dijkstra Algorithm</span>
-              <span class="topic-tag">Dynamic Programming</span>
-              <span class="topic-tag">Complexity</span>
-            </div>
-          </div>
-          <div>
-            <button class="btn-primary" id="study-btn"><span>Start Study Session</span> <i class="fa-solid fa-arrow-right"></i></button>
-          </div>
-        </div>
+        <span class="status-tag">Ready</span>
       </div>
     </div>
   </main>
@@ -613,13 +371,15 @@
     const themeBtn = document.getElementById('theme-btn');
     const uploadZone = document.getElementById('upload-zone');
     const fileInput = document.getElementById('file-input');
-    const addBtn = document.getElementById('add-btn');
     const toast = document.getElementById('toast');
     const toastText = document.getElementById('toast-text');
     const progressOverlay = document.getElementById('progress-overlay');
     const progressFill = document.getElementById('progress-fill');
     const progressPercent = document.getElementById('progress-percent');
     const progressName = document.getElementById('progress-name');
+    const statusCard = document.getElementById('status-card');
+    const cardName = document.getElementById('card-name');
+    const cardSize = document.getElementById('card-size');
 
     themeBtn.addEventListener('click', () => {
       const current = document.documentElement.getAttribute('data-theme');
@@ -629,7 +389,6 @@
     });
 
     uploadZone.addEventListener('click', () => fileInput.click());
-    addBtn.addEventListener('click', () => fileInput.click());
 
     fileInput.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {
@@ -649,7 +408,11 @@
             clearInterval(timer);
             setTimeout(() => {
               progressOverlay.style.display = 'none';
-              showToast('Successfully indexed ' + file.name);
+              const sizeStr = file.size > 1024*1024 ? (file.size/(1024*1024)).toFixed(1) + ' MB' : Math.round(file.size/1024) + ' KB';
+              cardName.textContent = file.name;
+              cardSize.textContent = '(' + sizeStr + ')';
+              statusCard.style.display = 'flex';
+              showToast('Uploaded ' + file.name + ' successfully');
             }, 300);
           }
         }, 150);
