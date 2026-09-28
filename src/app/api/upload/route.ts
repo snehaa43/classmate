@@ -1,21 +1,29 @@
 import { NextResponse } from 'next/server';
+import { parsePdfPageByPage, tempPdfStore } from '@/lib/pdfParser';
 
-// Maximum file size: 50MB
+// Action: Define maximum allowable file size (50MB in bytes)
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 export async function POST(request: Request) {
   try {
+    // ------------------------------------------------------------------------
+    // ACTION 1: Validate Request Content-Type Header
+    // Ensure the incoming request is a multipart/form-data payload
+    // ------------------------------------------------------------------------
     const contentType = request.headers.get('content-type') || '';
     if (!contentType.includes('multipart/form-data')) {
       return NextResponse.json(
         {
           success: false,
-          error: 'Invalid Content-Type. Request must be multipart/form-data with a FormData body.'
+          error: 'Invalid Content-Type header. Request must be multipart/form-data.'
         },
         { status: 400 }
       );
     }
 
+    // ------------------------------------------------------------------------
+    // ACTION 2: Parse FormData and Extract Uploaded File Object
+    // ------------------------------------------------------------------------
     const formData = await request.formData();
     const file = (formData.get('file') || formData.get('pdf')) as File | null;
 
@@ -29,7 +37,9 @@ export async function POST(request: Request) {
       );
     }
 
-    // 1. File Size Validation
+    // ------------------------------------------------------------------------
+    // ACTION 3: Validate File Size (Empty file & Upper Bound Limit)
+    // ------------------------------------------------------------------------
     if (file.size === 0) {
       return NextResponse.json(
         {
@@ -51,56 +61,81 @@ export async function POST(request: Request) {
       );
     }
 
-    // 2. MIME & File Extension Validation
-    const isPdfMime = file.type === 'application/pdf' || file.type === '';
+    // ------------------------------------------------------------------------
+    // ACTION 4: Validate File MIME Type & File Extension
+    // ------------------------------------------------------------------------
     const isPdfExt = file.name.toLowerCase().endsWith('.pdf');
+    const isPdfMime = file.type === 'application/pdf' || file.type === '';
 
-    if (!isPdfMime && !isPdfExt) {
+    if (!isPdfExt && !isPdfMime) {
       return NextResponse.json(
         {
           success: false,
-          error: `Invalid file type "${file.type}". Only PDF documents (.pdf) are permitted.`
+          error: `Invalid file format "${file.type || 'unknown'}". Only PDF files (.pdf) are permitted.`
         },
         { status: 415 }
       );
     }
 
-    // 3. Binary Header Verification (%PDF Magic Bytes)
+    // ------------------------------------------------------------------------
+    // ACTION 5: Convert File to Binary Buffer & Verify Magic Bytes (%PDF)
+    // ------------------------------------------------------------------------
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
-    const header = buffer.subarray(0, 4).toString('ascii');
+    const magicHeader = buffer.subarray(0, 4).toString('ascii');
 
-    if (header !== '%PDF') {
+    if (magicHeader !== '%PDF') {
       return NextResponse.json(
         {
           success: false,
-          error: 'Corrupted or invalid PDF header. The file content does not start with standard %PDF magic bytes.'
+          error: 'Invalid PDF structure. File does not contain standard %PDF header magic bytes.'
         },
         { status: 400 }
       );
     }
 
+    // ------------------------------------------------------------------------
+    // ACTION 6: Parse PDF and Extract Text Page by Page
+    // ------------------------------------------------------------------------
+    const { pages, totalPages, totalWords, totalChars } = await parsePdfPageByPage(buffer);
+
+    // ------------------------------------------------------------------------
+    // ACTION 7: Format Document Metadata
+    // ------------------------------------------------------------------------
+    const docId = `pdf_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const sizeFormatted = file.size > 1024 * 1024
       ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
       : `${Math.round(file.size / 1024)} KB`;
 
+    // ------------------------------------------------------------------------
+    // ACTION 8: Store Extracted Text Temporarily in In-Memory Cache (TTL: 1 hour)
+    // ------------------------------------------------------------------------
+    const storedDocument = tempPdfStore.save({
+      id: docId,
+      filename: file.name,
+      sizeBytes: file.size,
+      sizeFormatted,
+      totalPages,
+      totalWords,
+      totalChars,
+      pages,
+      uploadedAt: new Date().toISOString()
+    });
+
+    // ------------------------------------------------------------------------
+    // ACTION 9: Return JSON Response with Extracted Pages for Testing & Display
+    // ------------------------------------------------------------------------
     return NextResponse.json({
       success: true,
-      message: 'PDF received, validated, and stored in memory successfully.',
-      file: {
-        name: file.name,
-        sizeBytes: file.size,
-        sizeFormatted,
-        type: file.type || 'application/pdf',
-        lastModified: file.lastModified,
-        uploadedAt: new Date().toISOString()
-      }
+      message: `PDF parsed successfully! Extracted ${totalPages} page(s) with ${totalWords.toLocaleString()} words.`,
+      document: storedDocument
     });
+
   } catch (error: any) {
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || 'Server error occurred while processing PDF upload.'
+        error: error?.message || 'Internal server error while parsing PDF.'
       },
       { status: 500 }
     );

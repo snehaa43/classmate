@@ -1,9 +1,22 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { PDFParse, VerbosityLevel } = require('pdf-parse');
 
 const PORT = 3000;
-const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024; // 50MB
+// ACTION: Define maximum allowable file size (50MB)
+const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
+
+// ACTION: In-Memory Temporary Store for Parsed Documents (TTL: 1 hour)
+const tempDocStore = new Map();
+const TTL_MS = 60 * 60 * 1000;
+
+function saveTemporaryDoc(doc) {
+  const expiresAt = new Date(Date.now() + TTL_MS).toISOString();
+  const entry = { ...doc, expiresAt };
+  tempDocStore.set(doc.id, entry);
+  return entry;
+}
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -18,19 +31,22 @@ const MIME_TYPES = {
   '.pdf': 'application/pdf'
 };
 
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const reqPath = urlObj.pathname;
 
-  // Handle Backend PDF Upload Endpoint via FormData / Multipart
+  // ==========================================================================
+  // ACTION 1: Handle Backend PDF Upload & Extraction Endpoint (/api/upload)
+  // ==========================================================================
   if (req.method === 'POST' && (reqPath === '/api/upload' || reqPath === '/upload')) {
     const contentType = req.headers['content-type'] || '';
 
+    // Step 1: Validate multipart/form-data header
     if (!contentType.includes('multipart/form-data')) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({
         success: false,
-        error: 'Invalid Content-Type. Request must be multipart/form-data with FormData.'
+        error: 'Invalid Content-Type. Request must be multipart/form-data.'
       }));
     }
 
@@ -48,6 +64,7 @@ const server = http.createServer((req, res) => {
     const chunks = [];
     let totalBytes = 0;
 
+    // Step 2: Stream incoming chunks and validate 50MB size limit
     req.on('data', (chunk) => {
       totalBytes += chunk.length;
       if (totalBytes > MAX_FILE_SIZE_BYTES) {
@@ -61,7 +78,7 @@ const server = http.createServer((req, res) => {
       chunks.push(chunk);
     });
 
-    req.on('end', () => {
+    req.on('end', async () => {
       const fullBuffer = Buffer.concat(chunks);
 
       if (fullBuffer.length === 0) {
@@ -72,7 +89,7 @@ const server = http.createServer((req, res) => {
         }));
       }
 
-      // Parse multipart body
+      // Step 3: Parse multipart payload to extract file buffer
       const boundaryDelimiter = `--${boundary}`;
       const parts = splitBuffer(fullBuffer, Buffer.from(boundaryDelimiter));
 
@@ -85,7 +102,6 @@ const server = http.createServer((req, res) => {
         const headerStr = part.subarray(0, headerEndIndex).toString('utf-8');
         let bodyBuffer = part.subarray(headerEndIndex + 4);
 
-        // Strip trailing \r\n
         if (bodyBuffer.subarray(bodyBuffer.length - 2).toString() === '\r\n') {
           bodyBuffer = bodyBuffer.subarray(0, bodyBuffer.length - 2);
         }
@@ -95,8 +111,7 @@ const server = http.createServer((req, res) => {
           uploadedFile = {
             name: filenameMatch[1],
             data: bodyBuffer,
-            size: bodyBuffer.length,
-            header: headerStr
+            size: bodyBuffer.length
           };
           break;
         }
@@ -110,7 +125,7 @@ const server = http.createServer((req, res) => {
         }));
       }
 
-      // 1. File Size Validation
+      // Step 4: Validate file size (Empty file check)
       if (uploadedFile.size === 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({
@@ -119,7 +134,7 @@ const server = http.createServer((req, res) => {
         }));
       }
 
-      // 2. File Type / Extension Validation
+      // Step 5: Validate file extension (.pdf)
       if (!uploadedFile.name.toLowerCase().endsWith('.pdf')) {
         res.writeHead(415, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({
@@ -128,7 +143,7 @@ const server = http.createServer((req, res) => {
         }));
       }
 
-      // 3. Binary Magic Byte Header Verification (%PDF)
+      // Step 6: Validate %PDF binary magic bytes
       const magicBytes = uploadedFile.data.subarray(0, 4).toString('ascii');
       if (magicBytes !== '%PDF') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -138,22 +153,92 @@ const server = http.createServer((req, res) => {
         }));
       }
 
-      const sizeFormatted = uploadedFile.size > 1024 * 1024
-        ? `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`
-        : `${Math.round(uploadedFile.size / 1024)} KB`;
+      // Step 7: Parse PDF and extract page-by-page text
+      try {
+        const parser = new PDFParse({
+          verbosity: VerbosityLevel.ERRORS,
+          data: uploadedFile.data
+        });
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        success: true,
-        message: 'PDF received, validated, and stored in memory successfully by backend server.',
-        file: {
-          name: uploadedFile.name,
+        await parser.load();
+        const textResult = await parser.getText();
+        const rawPages = textResult?.pages || [];
+        const totalPages = textResult?.total || rawPages.length || 1;
+
+        const pages = [];
+        let totalWords = 0;
+        let totalChars = 0;
+
+        for (let i = 0; i < rawPages.length; i++) {
+          const p = rawPages[i];
+          const pageNumber = p.num || (i + 1);
+          const rawText = (p.text || '').trim();
+          const words = rawText.length > 0 ? rawText.split(/\s+/).filter(Boolean) : [];
+          const wordCount = words.length;
+          const charCount = rawText.length;
+
+          totalWords += wordCount;
+          totalChars += charCount;
+
+          pages.push({
+            pageNumber,
+            text: rawText || `[Page ${pageNumber}: No readable text content]`,
+            wordCount,
+            charCount
+          });
+        }
+
+        if (pages.length === 0 && textResult?.text) {
+          const fallbackText = textResult.text.trim();
+          const words = fallbackText.length > 0 ? fallbackText.split(/\s+/).filter(Boolean) : [];
+          pages.push({
+            pageNumber: 1,
+            text: fallbackText || '[Page 1: Empty content]',
+            wordCount: words.length,
+            charCount: fallbackText.length
+          });
+          totalWords = words.length;
+          totalChars = fallbackText.length;
+        }
+
+        try {
+          await parser.destroy();
+        } catch (_) {}
+
+        const sizeFormatted = uploadedFile.size > 1024 * 1024
+          ? `${(uploadedFile.size / (1024 * 1024)).toFixed(2)} MB`
+          : `${Math.round(uploadedFile.size / 1024)} KB`;
+
+        const docId = `pdf_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+        // Step 8: Store extracted text temporarily in memory Map
+        const storedDoc = saveTemporaryDoc({
+          id: docId,
+          filename: uploadedFile.name,
           sizeBytes: uploadedFile.size,
           sizeFormatted,
-          type: 'application/pdf',
+          totalPages: Math.max(totalPages, pages.length),
+          totalWords,
+          totalChars,
+          pages,
           uploadedAt: new Date().toISOString()
-        }
-      }));
+        });
+
+        // Step 9: Return JSON payload with extracted pages
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: true,
+          message: `PDF parsed successfully! Extracted ${pages.length} page(s).`,
+          document: storedDoc
+        }));
+
+      } catch (parseErr) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          success: false,
+          error: 'Failed to extract text from PDF document: ' + parseErr.message
+        }));
+      }
     });
 
     req.on('error', (err) => {
@@ -164,7 +249,9 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Static File Serving
+  // ==========================================================================
+  // ACTION 2: Static File Serving
+  // ==========================================================================
   let targetPath = reqPath === '/' ? '/index.html' : reqPath;
   const filePath = path.join(__dirname, targetPath);
   const ext = path.extname(filePath).toLowerCase();

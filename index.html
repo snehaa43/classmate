@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Classmate — PDF Upload</title>
-  <meta name="description" content="A minimal PDF upload interface for Classmate with FormData server integration." />
+  <title>Classmate — PDF Page-by-Page Parser & Extractor</title>
+  <meta name="description" content="A minimal PDF upload interface for Classmate with page-by-page text extraction, temporary in-memory store, and live test viewer." />
   
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -22,6 +22,7 @@
       --text-primary: #f8fafc;
       --text-secondary: #94a3b8;
       --text-muted: #64748b;
+      --text-highlight: #60a5fa;
       --emerald-primary: #10b981;
       --emerald-subtle: rgba(16, 185, 129, 0.1);
       --rose-primary: #ef4444;
@@ -44,6 +45,7 @@
       --text-primary: #0f172a;
       --text-secondary: #475569;
       --text-muted: #94a3b8;
+      --text-highlight: #2563eb;
     }
 
     *, *::before, *::after {
@@ -64,7 +66,7 @@
 
     .container {
       width: 100%;
-      max-width: 680px;
+      max-width: 780px;
       margin: 0 auto;
       padding: 0 1.5rem;
     }
@@ -141,7 +143,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      padding: 3rem 0;
+      padding: 3rem 0 4rem 0;
     }
 
     .content-container {
@@ -155,16 +157,16 @@
     }
 
     .main-title {
-      font-size: 2.4rem;
+      font-size: 2.3rem;
       font-weight: 700;
       letter-spacing: -0.04em;
       margin-bottom: 0.6rem;
     }
 
     .main-desc {
-      font-size: 1rem;
+      font-size: 0.95rem;
       color: var(--text-secondary);
-      max-width: 560px;
+      max-width: 620px;
       margin: 0 auto;
       line-height: 1.6;
     }
@@ -175,7 +177,7 @@
       border: 1px dashed var(--border-medium);
       border-radius: var(--radius-md);
       background: var(--bg-secondary);
-      padding: 3.5rem 2rem;
+      padding: 3rem 2rem;
       text-align: center;
       cursor: pointer;
       transition: all var(--transition-fast);
@@ -184,10 +186,6 @@
     .upload-zone:hover, .upload-zone.dragging {
       border-color: var(--text-primary);
       background: var(--bg-tertiary);
-    }
-
-    .upload-zone.uploading {
-      cursor: default;
     }
 
     .file-input-hidden {
@@ -278,54 +276,203 @@
       transition: width 0.15s ease;
     }
 
-    /* Uploaded Status Card */
-    .uploaded-status-card {
+    /* Results & Testing Panel */
+    .extracted-results-wrapper {
       display: none;
+      flex-direction: column;
+      gap: 0.85rem;
+      margin-top: 0.5rem;
+    }
+
+    .doc-summary-bar {
+      display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 0.85rem 1rem;
       border-radius: var(--radius-sm);
       background: var(--bg-secondary);
       border: 1px solid var(--border-subtle);
+      gap: 1rem;
     }
 
-    .uploaded-info {
+    .summary-left {
       display: flex;
       align-items: center;
       gap: 0.75rem;
       min-width: 0;
     }
 
-    .uploaded-meta-group {
+    .doc-title-group {
       display: flex;
       flex-direction: column;
       gap: 0.15rem;
+      min-width: 0;
     }
 
-    .uploaded-name {
-      font-size: 0.88rem;
-      font-weight: 500;
+    .doc-filename {
+      font-size: 0.9rem;
+      font-weight: 600;
       color: var(--text-primary);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .uploaded-meta {
+    .doc-stats {
       font-size: 0.75rem;
       font-family: var(--font-mono);
       color: var(--text-muted);
     }
 
-    .status-tag {
+    .summary-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+
+    .btn-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.35rem 0.65rem;
+      border-radius: var(--radius-xs);
+      background: var(--bg-primary);
+      border: 1px solid var(--border-subtle);
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .btn-toggle.active {
+      background: var(--text-primary);
+      color: var(--bg-primary);
+    }
+
+    .btn-icon-danger {
+      width: 30px;
+      height: 30px;
+      border-radius: var(--radius-xs);
+      border: 1px solid var(--border-subtle);
+      background: var(--bg-primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .btn-icon-danger:hover {
+      color: var(--rose-primary);
+      background: var(--rose-subtle);
+    }
+
+    .memory-store-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.75rem;
+      border-radius: var(--radius-xs);
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-subtle);
       font-size: 0.72rem;
       font-family: var(--font-mono);
-      padding: 0.2rem 0.55rem;
-      border-radius: var(--radius-xs);
-      background: var(--emerald-subtle);
-      color: var(--emerald-primary);
-      border: 1px solid rgba(16, 185, 129, 0.2);
+      color: var(--text-muted);
+      overflow-x: auto;
       white-space: nowrap;
+    }
+
+    .pill-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--emerald-primary);
+    }
+
+    .page-viewer-container {
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      background: var(--bg-secondary);
+      overflow: hidden;
+    }
+
+    .page-tabs-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg-tertiary);
+      border-bottom: 1px solid var(--border-subtle);
+      gap: 0.75rem;
+    }
+
+    .page-tabs-scroll {
+      display: flex;
+      gap: 0.35rem;
+      overflow-x: auto;
+    }
+
+    .page-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.3rem 0.65rem;
+      border-radius: var(--radius-xs);
+      background: var(--bg-primary);
+      border: 1px solid var(--border-subtle);
+      font-size: 0.75rem;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .page-tab.active {
+      background: var(--text-primary);
+      color: var(--bg-primary);
+      font-weight: 600;
+    }
+
+    .viewer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.65rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      background: var(--bg-primary);
+    }
+
+    .btn-copy {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.25rem 0.55rem;
+      border-radius: var(--radius-xs);
+      background: var(--bg-secondary);
+      border: 1px solid var(--border-subtle);
+      font-size: 0.72rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .text-display-box {
+      padding: 1.25rem;
+      background: var(--bg-secondary);
+      max-height: 440px;
+      overflow-y: auto;
+    }
+
+    .extracted-text-pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--text-primary);
     }
 
     .toast-alert {
@@ -347,12 +494,6 @@
 
     .toast-success { border-color: var(--emerald-primary); }
     .toast-error { border-color: var(--rose-primary); }
-
-    @media (max-width: 640px) {
-      .main-title { font-size: 1.85rem; }
-      .upload-zone { padding: 2.5rem 1.25rem; }
-      .server-badge { display: none; }
-    }
   </style>
 </head>
 <body>
@@ -365,7 +506,7 @@
       <div class="header-actions">
         <div class="server-badge">
           <i class="fa-solid fa-server"></i>
-          <span>Backend Ready (/api/upload)</span>
+          <span>Page Parser Active</span>
         </div>
         <button class="theme-btn" id="theme-btn" title="Toggle Theme">
           <i class="fa-solid fa-sun"></i>
@@ -377,9 +518,9 @@
   <main class="main-content">
     <div class="container content-container">
       <div class="intro-section">
-        <h1 class="main-title">Upload Study PDF</h1>
+        <h1 class="main-title">PDF Page-by-Page Parser</h1>
         <p class="main-desc">
-          Send your PDF via FormData directly to the backend server. Includes server-side MIME type, magic bytes header, and 50MB file size validation.
+          Upload any PDF file. The backend extracts text page-by-page, stores the results in a temporary in-memory store, and renders the extracted content below for live inspection and testing.
         </p>
       </div>
 
@@ -404,17 +545,42 @@
         </div>
       </div>
 
-      <!-- Uploaded Status Card -->
-      <div class="uploaded-status-card" id="status-card">
-        <div class="uploaded-info">
-          <i class="fa-solid fa-file-circle-check" style="color: var(--emerald-primary); font-size: 1.25rem;"></i>
-          <div class="uploaded-meta-group">
-            <span class="uploaded-name" id="card-name">Document.pdf</span>
-            <span class="uploaded-meta" id="card-meta">2.4 MB • MIME: application/pdf</span>
+      <!-- Extracted Results & Testing Viewer -->
+      <div class="extracted-results-wrapper" id="results-wrapper">
+        <div class="doc-summary-bar">
+          <div class="summary-left">
+            <i class="fa-solid fa-file-circle-check" style="color: var(--emerald-primary); font-size: 1.25rem;"></i>
+            <div class="doc-title-group">
+              <span class="doc-filename" id="doc-filename">Document.pdf</span>
+              <span class="doc-stats" id="doc-stats">2.4 MB • 4 Pages</span>
+            </div>
+          </div>
+          <div class="summary-actions">
+            <button class="btn-icon-danger" id="clear-btn" title="Clear Document"><i class="fa-solid fa-trash-can"></i></button>
           </div>
         </div>
-        <span class="status-tag">Backend Validated</span>
+
+        <div class="memory-store-pill">
+          <span class="pill-dot"></span>
+          <span>In-Memory Doc ID: <code id="store-id">pdf_123</code></span>
+          <span>•</span>
+          <span id="store-time">TTL: 1 hour in RAM</span>
+        </div>
+
+        <div class="page-viewer-container">
+          <div class="page-tabs-bar">
+            <div class="page-tabs-scroll" id="page-tabs"></div>
+          </div>
+          <div class="viewer-header">
+            <span id="page-indicator"><i class="fa-solid fa-layer-group"></i> Viewing Page 1</span>
+            <button class="btn-copy" id="copy-btn"><i class="fa-regular fa-copy"></i> Copy Page Text</button>
+          </div>
+          <div class="text-display-box">
+            <pre class="extracted-text-pre"><code id="page-text">Extracted text content will appear here...</code></pre>
+          </div>
+        </div>
       </div>
+
     </div>
   </main>
 
@@ -437,14 +603,23 @@
     const progressFill = document.getElementById('progress-fill');
     const progressPercent = document.getElementById('progress-percent');
     const progressName = document.getElementById('progress-name');
-    const statusCard = document.getElementById('status-card');
-    const cardName = document.getElementById('card-name');
-    const cardMeta = document.getElementById('card-meta');
+    const resultsWrapper = document.getElementById('results-wrapper');
+    const docFilename = document.getElementById('doc-filename');
+    const docStats = document.getElementById('doc-stats');
+    const storeId = document.getElementById('store-id');
+    const pageTabs = document.getElementById('page-tabs');
+    const pageIndicator = document.getElementById('page-indicator');
+    const pageText = document.getElementById('page-text');
+    const copyBtn = document.getElementById('copy-btn');
+    const clearBtn = document.getElementById('clear-btn');
     const uploadHeading = document.getElementById('upload-heading');
     const iconWrap = document.getElementById('icon-wrap');
 
+    let currentDoc = null;
+    let selectedPageIndex = 0;
     let isUploading = false;
 
+    // Theme Toggle
     themeBtn.addEventListener('click', () => {
       const current = document.documentElement.getAttribute('data-theme');
       const next = current === 'dark' ? 'light' : 'dark';
@@ -468,93 +643,133 @@
     uploadZone.addEventListener('drop', (e) => {
       e.preventDefault();
       uploadZone.classList.remove('dragging');
-      if (e.dataTransfer.files.length > 0) {
-        handleUpload(e.dataTransfer.files[0]);
-      }
+      if (e.dataTransfer.files.length > 0) handleUpload(e.dataTransfer.files[0]);
     });
 
     fileInput.addEventListener('change', (e) => {
-      if (e.target.files.length > 0) {
-        handleUpload(e.target.files[0]);
-      }
+      if (e.target.files.length > 0) handleUpload(e.target.files[0]);
     });
 
-    function handleUpload(file) {
-      // 1. Client-Side File Type Validation
-      const isPdfExt = file.name.toLowerCase().endsWith('.pdf');
-      const isPdfMime = file.type === 'application/pdf' || file.type === '';
-      if (!isPdfExt && !isPdfMime) {
+    clearBtn.addEventListener('click', () => {
+      currentDoc = null;
+      resultsWrapper.style.display = 'none';
+      showToast('Document cleared from view.', 'info');
+    });
+
+    copyBtn.addEventListener('click', () => {
+      if (!currentDoc) return;
+      const text = currentDoc.pages[selectedPageIndex]?.text || '';
+      navigator.clipboard.writeText(text);
+      showToast(`Page ${selectedPageIndex + 1} text copied to clipboard!`, 'success');
+    });
+
+    async function handleUpload(file) {
+      // Step 1: Validate file format
+      const isPdf = file.name.toLowerCase().endsWith('.pdf');
+      if (!isPdf) {
         showToast('Validation Error: Only PDF files (.pdf) are allowed.', 'error');
         return;
       }
 
-      // 2. Client-Side File Size Validation
+      // Step 2: Validate file size
       if (file.size === 0) {
-        showToast('Validation Error: The selected file is empty (0 bytes).', 'error');
+        showToast('Validation Error: File is empty (0 bytes).', 'error');
         return;
       }
 
       if (file.size > MAX_FILE_SIZE_BYTES) {
         const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
-        showToast(`Validation Error: File size (${sizeMb} MB) exceeds maximum allowed ${MAX_FILE_SIZE_MB} MB limit.`, 'error');
+        showToast(`Validation Error: File size (${sizeMb} MB) exceeds 50 MB limit.`, 'error');
         return;
       }
 
-      // 3. Send using FormData to backend server
+      // Step 3: Send via FormData to backend
       const formData = new FormData();
       formData.append('file', file);
 
       isUploading = true;
       progressOverlay.style.display = 'flex';
-      progressName.textContent = 'Connecting to backend server...';
-      progressPercent.textContent = '10%';
-      progressFill.style.width = '10%';
+      progressName.textContent = 'Parsing & Extracting Pages...';
+      progressPercent.textContent = '30%';
+      progressFill.style.width = '30%';
       iconWrap.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
       uploadHeading.textContent = 'Sending PDF to backend...';
 
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/upload', true);
+      try {
+        const res = await fetch('/api/upload', {
+          method: 'POST',
+          body: formData
+        });
 
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) {
-          const p = Math.round((e.loaded / e.total) * 85);
-          progressPercent.textContent = p + '%';
-          progressFill.style.width = p + '%';
-          progressName.textContent = `Uploading ${p}% to backend...`;
-        }
-      };
+        progressPercent.textContent = '85%';
+        progressFill.style.width = '85%';
 
-      xhr.onload = () => {
-        isUploading = false;
-        progressOverlay.style.display = 'none';
-        iconWrap.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i>';
-        uploadHeading.textContent = 'Click to browse or drop your PDF here';
+        const responseText = await res.text();
+        let response = null;
 
         try {
-          const response = JSON.parse(xhr.responseText);
-          if (xhr.status >= 200 && xhr.status < 300 && response.success) {
-            cardName.textContent = response.file.name;
-            cardMeta.textContent = `${response.file.sizeFormatted} • MIME: ${response.file.type}`;
-            statusCard.style.display = 'flex';
-            showToast(response.message || `PDF "${file.name}" received by backend!`, 'success');
-          } else {
-            const err = response.error || `Server responded with status ${xhr.status}`;
-            showToast(`Backend Validation Failed: ${err}`, 'error');
-          }
-        } catch (e) {
-          showToast(`Server Error: Unexpected response format (${xhr.status})`, 'error');
+          response = JSON.parse(responseText);
+        } catch (parseErr) {
+          console.error('JSON Parse Error:', parseErr, 'Raw response:', responseText);
+          isUploading = false;
+          progressOverlay.style.display = 'none';
+          iconWrap.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i>';
+          uploadHeading.textContent = 'Click to browse or drop your PDF here';
+          showToast(`Server returned invalid response (Status ${res.status})`, 'error');
+          return;
         }
-      };
 
-      xhr.onerror = () => {
         isUploading = false;
         progressOverlay.style.display = 'none';
         iconWrap.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i>';
         uploadHeading.textContent = 'Click to browse or drop your PDF here';
-        showToast('Network Error: Failed to reach backend server.', 'error');
-      };
 
-      xhr.send(formData);
+        if (res.ok && response && response.success && response.document) {
+          currentDoc = response.document;
+          renderExtractedDoc();
+          showToast(response.message || `Extracted ${currentDoc.totalPages || 1} page(s)!`, 'success');
+        } else {
+          const errorMsg = response?.error || `Server responded with status ${res.status}`;
+          showToast(`Backend Error: ${errorMsg}`, 'error');
+        }
+      } catch (err) {
+        isUploading = false;
+        progressOverlay.style.display = 'none';
+        iconWrap.innerHTML = '<i class="fa-solid fa-cloud-arrow-up"></i>';
+        uploadHeading.textContent = 'Click to browse or drop your PDF here';
+        showToast(`Network Error: ${err.message || 'Failed to reach backend parser.'}`, 'error');
+      }
+    }
+
+    function renderExtractedDoc() {
+      if (!currentDoc) return;
+      docFilename.textContent = currentDoc.filename;
+      docStats.textContent = `${currentDoc.sizeFormatted} • ${currentDoc.totalPages} Page(s) • ${currentDoc.totalWords.toLocaleString()} Words`;
+      storeId.textContent = currentDoc.id;
+
+      // Render Page Tabs
+      pageTabs.innerHTML = '';
+      currentDoc.pages.forEach((p, idx) => {
+        const btn = document.createElement('button');
+        btn.className = `page-tab ${idx === selectedPageIndex ? 'active' : ''}`;
+        btn.innerHTML = `Page ${p.pageNumber} <span style="font-size: 0.68rem; opacity: 0.75;">(${p.wordCount}w)</span>`;
+        btn.addEventListener('click', () => {
+          selectedPageIndex = idx;
+          document.querySelectorAll('.page-tab').forEach((t, i) => t.classList.toggle('active', i === idx));
+          showPage(idx);
+        });
+        pageTabs.appendChild(btn);
+      });
+
+      showPage(0);
+      resultsWrapper.style.display = 'flex';
+    }
+
+    function showPage(idx) {
+      if (!currentDoc || !currentDoc.pages[idx]) return;
+      const page = currentDoc.pages[idx];
+      pageIndicator.innerHTML = `<i class="fa-solid fa-layer-group"></i> Viewing Page ${page.pageNumber} of ${currentDoc.totalPages} — <strong>${page.wordCount} words</strong> (${page.charCount} chars)`;
+      pageText.textContent = page.text;
     }
 
     function showToast(msg, type = 'info') {
