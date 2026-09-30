@@ -15,6 +15,10 @@ export interface TextChunk {
   charCount: number;        // Total character length of chunk
   wordCount: number;        // Total word count of chunk
   tokenEstimate: number;    // Estimated token count (1 token ~= 4 chars)
+  embedding?: number[];     // Vector embedding array (e.g., 3072 or 768 float values from @google/genai)
+  vectorNorm?: string | number; // Euclidean vector norm / magnitude
+  dimension?: number;       // Dimension length of embedding vector
+  embeddingModel?: string;  // Model used for embedding (e.g. 'gemini-embedding-001')
   metadata?: Record<string, any>; // Optional additional metadata tags
 }
 

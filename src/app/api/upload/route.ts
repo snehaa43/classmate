@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { parsePdfPageByPage, tempPdfStore, chunkPages } from '@/lib/pdfParser';
+import { embedChunks } from '@/lib/embeddings';
 
 // Action: Define maximum allowable file size (50MB in bytes)
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
@@ -102,7 +103,25 @@ export async function POST(request: Request) {
     // ------------------------------------------------------------------------
     // ACTION 7: Chunk Extracted Text Page by Page into Semantic Chunks
     // ------------------------------------------------------------------------
-    const chunks = chunkPages(pages);
+    let chunks = chunkPages(pages);
+
+    // ------------------------------------------------------------------------
+    // ACTION 7b: Vectorize PDF Chunks with Google GenAI Embeddings
+    // ------------------------------------------------------------------------
+    let isEmbedded = false;
+    let embeddingDimension = 0;
+    const shouldEmbed = formData.get('embed') !== 'false';
+
+    if (shouldEmbed && chunks.length > 0) {
+      try {
+        const embedResult = await embedChunks(chunks);
+        chunks = embedResult.chunks as any;
+        isEmbedded = true;
+        embeddingDimension = embedResult.dimension;
+      } catch (embErr: any) {
+        console.warn('[Upload Route] Vector embedding skipped/failed:', embErr?.message || embErr);
+      }
+    }
 
     // ------------------------------------------------------------------------
     // ACTION 8: Format Document Metadata
@@ -133,8 +152,10 @@ export async function POST(request: Request) {
     // ------------------------------------------------------------------------
     return NextResponse.json({
       success: true,
-      message: `PDF parsed successfully! Extracted ${totalPages} page(s), ${totalWords.toLocaleString()} words, and generated ${chunks.length} chunks.`,
-      document: storedDocument
+      message: `PDF parsed successfully! Extracted ${totalPages} page(s), ${totalWords.toLocaleString()} words, and generated ${chunks.length} chunks${isEmbedded ? ` with ${embeddingDimension}-d vector embeddings` : ''}.`,
+      document: storedDocument,
+      embedded: isEmbedded,
+      dimension: embeddingDimension
     });
 
   } catch (error: any) {
