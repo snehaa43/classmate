@@ -4,12 +4,14 @@
 // ============================================================================
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector")]
 }
 
 // ----------------------------------------------------------------------------
@@ -31,17 +33,27 @@ model User {
 
 // ----------------------------------------------------------------------------
 // ACTION 2: Document Model
-// Represents uploaded PDF documents associated with a user
+// Represents uploaded PDF documents associated with a user or guest session
+// Stores rich document-level and page-level metadata
 // ----------------------------------------------------------------------------
 model Document {
-  id        String   @id @default(cuid())   // Unique Primary Key
-  title     String                          // Document / file title
-  userId    String                          // Foreign Key referencing User(id)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  chunks    Chunk[]                         // 1-to-Many relation: A document has many chunks
+  id            String   @id @default(cuid())   // Unique Primary Key
+  title         String                          // Document / file title
+  filename      String?                         // Original filename (e.g., syllabus.pdf)
+  fileSize      Int?                            // File size in bytes
+  sizeFormatted String?                         // Formatted size (e.g. 2.4 MB, 450 KB)
+  totalPages    Int?     @default(1)            // Total extracted page count
+  totalWords    Int?     @default(0)            // Total word count across document
+  totalChars    Int?     @default(0)            // Total character count across document
+  mimeType      String?  @default("application/pdf") // MIME type
+  pageMetadata  Json?                           // Page-by-page metadata array (pageNumber, wordCount, charCount, snippet)
+  metadata      Json?                           // Document-level metadata JSON (embedding info, source, tags)
+  userId        String?                         // Optional Foreign Key referencing User(id)
+  user          User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chunks        Chunk[]                         // 1-to-Many relation: A document has many chunks
 
-  createdAt DateTime @default(now())        // Creation timestamp
-  updatedAt DateTime @updatedAt             // Last update timestamp
+  createdAt     DateTime @default(now())        // Creation timestamp
+  updatedAt     DateTime @updatedAt             // Last update timestamp
 
   @@index([userId])
   @@map("documents")
@@ -49,18 +61,26 @@ model Document {
 
 // ----------------------------------------------------------------------------
 // ACTION 3: Chunk Model
-// Represents segmented semantic text chunks extracted from document pages
+// Represents segmented semantic text chunks with vector(768) pgvector embeddings
 // ----------------------------------------------------------------------------
 model Chunk {
-  id         String   @id @default(cuid())  // Unique Primary Key
-  content    String   @db.Text              // Extracted text chunk content
-  pageNumber Int                            // Originating page number (1-indexed)
-  documentId String                         // Foreign Key referencing Document(id)
-  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  id             String                      @id @default(cuid())  // Unique Primary Key
+  content        String                      @db.Text              // Extracted text chunk content
+  pageNumber     Int                                               // Originating page number (1-indexed)
+  chunkIndex     Int                         @default(0)           // Sequential chunk position within document
+  charCount      Int?                                              // Character count of the chunk
+  wordCount      Int?                                              // Word count of the chunk
+  tokenEstimate  Int?                                              // Estimated token count (1 token ~= 4 chars)
+  embedding      Unsupported("vector(768)")?                       // 768-dimensional vector embedding for pgvector
+  embeddingModel String?                     @default("gemini-embedding-001") // Embedding model identifier
+  metadata       Json?                                             // Additional chunk metadata (vectorNorm, tags, etc.)
+  documentId     String                                            // Foreign Key referencing Document(id)
+  document       Document                    @relation(fields: [documentId], references: [id], onDelete: Cascade)
 
-  createdAt  DateTime @default(now())       // Creation timestamp
+  createdAt      DateTime                    @default(now())       // Creation timestamp
 
   @@index([documentId])
   @@index([pageNumber])
+  @@index([chunkIndex])
   @@map("chunks")
 }

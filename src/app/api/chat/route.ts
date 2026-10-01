@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { KNOWLEDGE_BASE } from '@/data/knowledgeBase';
 import { tempPdfStore } from '@/lib/pdfParser';
-import { searchPdfChunks, getGenAIClient, getGeminiApiKey } from '@/lib/embeddings';
+import { searchPdfChunks, generateEmbedding, getGenAIClient, getGeminiApiKey } from '@/lib/embeddings';
+import { searchChunksWithPgvector, getStoredDocumentById } from '@/lib/documentStorage';
 
 export async function POST(request: Request) {
   try {
@@ -14,31 +15,58 @@ export async function POST(request: Request) {
 
     const latencyStart = Date.now();
 
-    // 1. Check if document exists in temporary in-memory store (uploaded PDF)
+    // 1. Check if document exists in PostgreSQL Database or temporary in-memory store
+    const dbDoc = await getStoredDocumentById(documentId);
     const tempDoc = tempPdfStore.get(documentId);
     const kbDoc = KNOWLEDGE_BASE[documentId];
-    const docName = tempDoc?.filename || kbDoc?.name || 'Document';
+    const docName = dbDoc?.title || dbDoc?.filename || tempDoc?.filename || kbDoc?.name || 'Document';
 
     let citations: any[] = [];
     let answer = '';
 
-    if (tempDoc && tempDoc.chunks && tempDoc.chunks.length > 0) {
+    // Step A: Attempt pgvector search from PostgreSQL
+    if (dbDoc && dbDoc.chunks && dbDoc.chunks.length > 0) {
+      try {
+        const queryVector = await generateEmbedding(query, { model: 'gemini-embedding-001' });
+        const vectorResults = await searchChunksWithPgvector(queryVector, {
+          documentId,
+          topK: 3
+        });
+
+        if (vectorResults && vectorResults.length > 0) {
+          citations = vectorResults.map((res, idx) => ({
+            index: idx + 1,
+            chunkId: res.id,
+            page: res.pageNumber ? `Page ${res.pageNumber}` : `Chunk #${idx + 1}`,
+            score: res.similarityFormatted,
+            quote: res.content
+          }));
+        }
+      } catch (dbErr) {
+        console.warn('[Chat Route] pgvector search fallback:', dbErr);
+      }
+    }
+
+    // Step B: Fallback to in-memory chunks if citations not found from PostgreSQL
+    if (citations.length === 0 && tempDoc && tempDoc.chunks && tempDoc.chunks.length > 0) {
       // Perform semantic vector retrieval over the PDF chunks
       const searchResults = await searchPdfChunks(query, tempDoc.chunks, { topK: 3 });
 
-      citations = searchResults.map((res, idx) => ({
+      citations = searchResults.map((res: any, idx: number) => ({
         index: idx + 1,
-        chunkId: res.chunk.id || idx + 1,
-        page: res.chunk.pageNumber ? `Page ${res.chunk.pageNumber}` : `Chunk #${idx + 1}`,
+        chunkId: (res.chunk as any)?.id || idx + 1,
+        page: (res.chunk as any)?.pageNumber ? `Page ${(res.chunk as any).pageNumber}` : `Chunk #${idx + 1}`,
         score: res.similarityFormatted,
-        quote: res.chunk.text
+        quote: (res.chunk as any)?.text || ''
       }));
+    }
 
+    if (citations.length > 0) {
       // Try generating grounded response using Gemini
       const apiKey = getGeminiApiKey();
       if (apiKey && citations.length > 0) {
         try {
-          const ai = getGenAIClient(apiKey);
+          const ai = getGenAIClient();
           const contextPrompt = citations
             .map((c) => `[Citation #${c.index} - ${c.page}]: ${c.quote}`)
             .join('\n\n');

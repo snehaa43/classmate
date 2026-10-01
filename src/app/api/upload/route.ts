@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { parsePdfPageByPage, tempPdfStore, chunkPages } from '@/lib/pdfParser';
 import { embedChunks } from '@/lib/embeddings';
+import { getAuthUser } from '@/lib/auth';
+import { saveDocumentWithChunksAndEmbeddings } from '@/lib/documentStorage';
 
 // Action: Define maximum allowable file size (50MB in bytes)
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
@@ -106,7 +108,7 @@ export async function POST(request: Request) {
     let chunks = chunkPages(pages);
 
     // ------------------------------------------------------------------------
-    // ACTION 7b: Vectorize PDF Chunks with Google GenAI Embeddings
+    // ACTION 7b: Vectorize PDF Chunks with Google GenAI Embeddings (768-d)
     // ------------------------------------------------------------------------
     let isEmbedded = false;
     let embeddingDimension = 0;
@@ -117,7 +119,7 @@ export async function POST(request: Request) {
         const embedResult = await embedChunks(chunks);
         chunks = embedResult.chunks as any;
         isEmbedded = true;
-        embeddingDimension = embedResult.dimension;
+        embeddingDimension = embedResult.dimension || 768;
       } catch (embErr: any) {
         console.warn('[Upload Route] Vector embedding skipped/failed:', embErr?.message || embErr);
       }
@@ -148,14 +150,61 @@ export async function POST(request: Request) {
     });
 
     // ------------------------------------------------------------------------
-    // ACTION 10: Return JSON Response with Extracted Pages & Chunks
+    // ACTION 10: Store Document & Page Metadata + Chunks + vector(768) Embeddings in PostgreSQL
+    // ------------------------------------------------------------------------
+    let dbPersisted = false;
+    let dbError: string | null = null;
+    let dbResult: any = null;
+
+    try {
+      const authUser = await getAuthUser();
+      const customTitle = (formData.get('title') as string) || file.name;
+
+      dbResult = await saveDocumentWithChunksAndEmbeddings({
+        id: docId,
+        title: customTitle,
+        filename: file.name,
+        fileSize: file.size,
+        sizeFormatted,
+        totalPages,
+        totalWords,
+        totalChars,
+        mimeType: file.type || 'application/pdf',
+        pages,
+        userId: authUser?.userId || null,
+        metadata: {
+          embedded: isEmbedded,
+          dimension: embeddingDimension,
+          originalName: file.name,
+          clientMime: file.type
+        },
+        chunks
+      });
+
+      dbPersisted = true;
+    } catch (err: any) {
+      console.warn('[Upload Route] PostgreSQL persistence warning:', err?.message || err);
+      dbError = err?.message || 'Database write skipped';
+    }
+
+    // ------------------------------------------------------------------------
+    // ACTION 11: Return Comprehensive JSON Response
     // ------------------------------------------------------------------------
     return NextResponse.json({
       success: true,
       message: `PDF parsed successfully! Extracted ${totalPages} page(s), ${totalWords.toLocaleString()} words, and generated ${chunks.length} chunks${isEmbedded ? ` with ${embeddingDimension}-d vector embeddings` : ''}.`,
       document: storedDocument,
+      persistedInDatabase: dbPersisted,
+      dbDocumentId: dbResult?.document?.id || docId,
+      dbError: dbError || undefined,
       embedded: isEmbedded,
-      dimension: embeddingDimension
+      dimension: embeddingDimension,
+      pageMetadata: dbResult?.pageMetadata || pages.map((p) => ({
+        pageNumber: p.pageNumber,
+        wordCount: p.wordCount,
+        charCount: p.charCount,
+        textSnippet: p.text.substring(0, 140)
+      }))
     });
 
   } catch (error: any) {

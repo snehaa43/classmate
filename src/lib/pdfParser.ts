@@ -189,7 +189,7 @@ export async function parsePdfPageByPage(buffer: Buffer): Promise<{
 
   try {
     // Action 2: Load document stream
-    await parser.load();
+    await (parser as any).load?.();
 
     // Action 3: Extract structured text and pages
     const textResult = await parser.getText();
