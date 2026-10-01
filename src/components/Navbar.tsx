@@ -69,10 +69,12 @@ export default function Navbar({ onOpenUpload, onShowToast }: NavbarProps) {
         <div className="nav-actions">
           <button
             id="theme-toggle"
+            type="button"
             className="icon-btn"
             title={`Toggle Theme (Current: ${theme})`}
             aria-label="Toggle theme"
             onClick={toggleTheme}
+            suppressHydrationWarning
           >
             {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
           </button>

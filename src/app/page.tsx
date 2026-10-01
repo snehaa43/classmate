@@ -359,9 +359,11 @@ export default function HomePage() {
             )}
 
             <button
+              type="button"
               className="theme-btn"
               onClick={toggleTheme}
               title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`}
+              suppressHydrationWarning
             >
               {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
             </button>

@@ -142,7 +142,13 @@ export default function LoginPage() {
               <ArrowLeft size={14} />
               <span>Back to App</span>
             </Link>
-            <button className="theme-btn" onClick={toggleTheme} title="Toggle Theme">
+            <button
+              type="button"
+              className="theme-btn"
+              onClick={toggleTheme}
+              title="Toggle Theme"
+              suppressHydrationWarning
+            >
               {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
             </button>
           </div>
