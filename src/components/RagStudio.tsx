@@ -29,7 +29,14 @@ import {
   Sliders,
   Mic,
   ArrowUp,
-  Lock
+  Lock,
+  Search,
+  Sparkles,
+  Database,
+  Layers,
+  Send,
+  RefreshCw,
+  ExternalLink
 } from 'lucide-react';
 
 interface ChatMessage {
@@ -40,6 +47,23 @@ interface ChatMessage {
   reasoningSteps?: string[];
   citations?: Citation[];
   modelName?: string;
+}
+
+interface RetrievedChunkItem {
+  id: string;
+  documentId: string;
+  documentTitle: string;
+  documentFilename?: string;
+  pageNumber: number;
+  chunkIndex: number;
+  content: string;
+  similarity: number;
+  similarityFormatted: string;
+  rank: number;
+  tokenEstimate: number;
+  charCount: number;
+  wordCount: number;
+  metadata?: any;
 }
 
 interface RagStudioProps {
@@ -55,6 +79,23 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
   const [chatInput, setChatInput] = useState<string>('');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
+  
+  // Vector Search & Chunk Retriever State
+  const [activeTab, setActiveTab] = useState<'chat' | 'search'>('chat');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [searchDocScope, setSearchDocScope] = useState<string>('all');
+  const [searchTopK, setSearchTopK] = useState<number>(4);
+  const [retrievedChunks, setRetrievedChunks] = useState<RetrievedChunkItem[]>([]);
+  const [searchStats, setSearchStats] = useState<{
+    model: string;
+    dimension: number;
+    norm: string;
+    latencyMs: number;
+    source: string;
+    totalResults: number;
+  } | null>(null);
+
   const [uploadProgress, setUploadProgress] = useState<{ active: boolean; text: string; percent: number }>({
     active: false,
     text: '',
@@ -430,6 +471,57 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
     }
   };
 
+  // Semantic Vector Search Handler
+  const handleSemanticSearch = async (queryText?: string) => {
+    const q = (queryText || searchQuery).trim();
+    if (!q || isSearching) return;
+
+    setIsSearching(true);
+    setSearchQuery(q);
+
+    try {
+      const targetDocId = searchDocScope === 'all' ? undefined : (currentDocId === 'custom' && customDoc ? customDoc.id : currentDocId);
+      const res = await fetch('/api/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: q,
+          documentId: targetDocId,
+          topK: searchTopK,
+          model: 'gemini-embedding-001'
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        setRetrievedChunks(data.chunks || []);
+        setSearchStats({
+          model: data.queryEmbedding?.model || 'gemini-embedding-001',
+          dimension: data.queryEmbedding?.dimension || 768,
+          norm: data.queryEmbedding?.vectorNorm || '1.000',
+          latencyMs: data.latencyMs || 0,
+          source: data.searchParameters?.retrievalSource || 'postgresql_pgvector',
+          totalResults: data.totalResults || (data.chunks?.length || 0)
+        });
+        onShowToast(`Retrieved ${data.chunks?.length || 0} chunks (${data.latencyMs}ms)`, 'success');
+      } else {
+        onShowToast(data.error || 'Vector search returned no results', 'error');
+      }
+    } catch (err: any) {
+      console.error('Semantic search error:', err);
+      onShowToast(err?.message || 'Search failed', 'error');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleUseChunkInChat = (chunk: RetrievedChunkItem) => {
+    setActiveTab('chat');
+    setChatInput(`Based on chunk from ${chunk.pageNumber ? `Page ${chunk.pageNumber}` : 'document'}, explain: "${chunk.content.substring(0, 120)}..."`);
+    onShowToast(`Loaded Chunk into Agent Prompt`, 'info');
+  };
+
   // Helper to render markdown and clickable citation links
   const renderMessageContent = (text: string, citations?: Citation[]) => {
     const parts = text.split(/(\[\d+\]|\[#\d+\])/g);
@@ -626,206 +718,477 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
 
           </div>
 
-          {/* Right Pane: Agent Console */}
+          {/* Right Pane: Agent Console & Semantic Vector Search */}
           <div className="studio-pane studio-right">
             
             <div className="pane-header">
-              <div className="pane-title">
-                <MessageSquare size={16} />
-                <h3>Agent Console</h3>
-              </div>
-              <div className="model-select-wrap">
-                <select
-                  value={selectedModel}
-                  onChange={(e) => setSelectedModel(e.target.value)}
-                  className="model-dropdown"
+              <div className="studio-tabs-nav">
+                <button
+                  type="button"
+                  className={`studio-tab-btn ${activeTab === 'chat' ? 'active' : ''}`}
+                  onClick={() => setActiveTab('chat')}
                 >
-                  <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                  <option value="claude-3.7-sonnet">Claude 3.7 Sonnet</option>
-                  <option value="gpt-4o">GPT-4o</option>
-                  <option value="deepseek-r1">DeepSeek-R1</option>
-                </select>
+                  <MessageSquare size={15} />
+                  <span>Agent Chat</span>
+                </button>
+                <button
+                  type="button"
+                  className={`studio-tab-btn ${activeTab === 'search' ? 'active' : ''}`}
+                  onClick={() => {
+                    setActiveTab('search');
+                    if (retrievedChunks.length === 0) {
+                      handleSemanticSearch(activeDoc.suggestedQueries?.[0] || 'financial risk factors');
+                    }
+                  }}
+                >
+                  <Search size={15} />
+                  <span>Vector Search & Chunks</span>
+                  {retrievedChunks.length > 0 && <span className="tab-badge">{retrievedChunks.length}</span>}
+                </button>
               </div>
-            </div>
 
-            {/* Suggested Prompts */}
-            <div className="suggested-prompts-wrap">
-              <span className="suggested-label">Queries:</span>
-              <div className="prompts-scroll">
-                {activeDoc.suggestedQueries.map((q, idx) => (
-                  <button
-                    key={idx}
-                    className="prompt-pill"
-                    onClick={() => handleSubmitQuery(q)}
+              {activeTab === 'chat' ? (
+                <div className="model-select-wrap">
+                  <select
+                    value={selectedModel}
+                    onChange={(e) => setSelectedModel(e.target.value)}
+                    className="model-dropdown"
                   >
-                    {q}
-                  </button>
-                ))}
-              </div>
+                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                    <option value="claude-3.7-sonnet">Claude 3.7 Sonnet</option>
+                    <option value="gpt-4o">GPT-4o</option>
+                    <option value="deepseek-r1">DeepSeek-R1</option>
+                  </select>
+                </div>
+              ) : (
+                <div className="search-topk-wrap" style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <select
+                    value={searchTopK}
+                    onChange={(e) => setSearchTopK(Number(e.target.value))}
+                    className="model-dropdown"
+                    title="Number of top chunks to retrieve"
+                  >
+                    <option value={3}>Top 3 Chunks</option>
+                    <option value={4}>Top 4 Chunks</option>
+                    <option value={6}>Top 6 Chunks</option>
+                    <option value={8}>Top 8 Chunks</option>
+                  </select>
+                </div>
+              )}
             </div>
 
-            {/* Chat Viewport */}
-            <div className="chat-viewport" ref={chatViewportRef}>
-              {messages.map((msg) => (
-                <div key={msg.id} className={`chat-bubble ${msg.sender === 'user' ? 'user-bubble' : 'ai-bubble'}`}>
-                  <div className="bubble-avatar">
-                    {msg.sender === 'user' ? <FileText size={14} /> : <Terminal size={14} />}
+            {/* TAB 1: AGENT CHAT */}
+            {activeTab === 'chat' && (
+              <>
+                {/* Suggested Prompts */}
+                <div className="suggested-prompts-wrap">
+                  <span className="suggested-label">Queries:</span>
+                  <div className="prompts-scroll">
+                    {activeDoc.suggestedQueries.map((q, idx) => (
+                      <button
+                        key={idx}
+                        className="prompt-pill"
+                        onClick={() => handleSubmitQuery(q)}
+                      >
+                        {q}
+                      </button>
+                    ))}
                   </div>
-                  <div className="bubble-content">
-                    <div className="bubble-header">
-                      <strong>{msg.sender === 'user' ? 'You' : `Nexus Agent (${msg.modelName || 'Gemini'})`}</strong>
-                      <span className="bubble-time">{msg.time}</span>
+                </div>
+
+                {/* Chat Viewport */}
+                <div className="chat-viewport" ref={chatViewportRef}>
+                  {messages.map((msg) => (
+                    <div key={msg.id} className={`chat-bubble ${msg.sender === 'user' ? 'user-bubble' : 'ai-bubble'}`}>
+                      <div className="bubble-avatar">
+                        {msg.sender === 'user' ? <FileText size={14} /> : <Terminal size={14} />}
+                      </div>
+                      <div className="bubble-content">
+                        <div className="bubble-header">
+                          <strong>{msg.sender === 'user' ? 'You' : `Nexus Agent (${msg.modelName || 'Gemini'})`}</strong>
+                          <span className="bubble-time">{msg.time}</span>
+                        </div>
+
+                        {msg.reasoningSteps && (
+                          <div className="reasoning-chain-box">
+                            <div className="reasoning-toggle-btn">
+                              <span>
+                                <Microchip size={12} style={{ display: 'inline', marginRight: 4 }} />
+                                Agent Retrieval & Reasoning Steps (4)
+                              </span>
+                            </div>
+                            <div className="reasoning-steps-list">
+                              {msg.reasoningSteps.map((step, sIdx) => (
+                                <div key={sIdx} className="reasoning-step-item">
+                                  <Check size={12} className="text-emerald" /> {step}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="ai-answer-text">
+                          {renderMessageContent(msg.text, msg.citations)}
+                        </div>
+
+                        {msg.sender === 'ai' && (
+                          <div className="bubble-actions-toolbar">
+                            <button
+                              className="bubble-tool-btn"
+                              title="Copy answer"
+                              onClick={() => handleCopyAnswer(msg.text)}
+                            >
+                              <Copy size={12} /> Copy
+                            </button>
+                            <button
+                              className="bubble-tool-btn"
+                              title="Listen to answer"
+                              onClick={() => handleTTS(msg.text)}
+                            >
+                              <Volume2 size={12} /> Read
+                            </button>
+                            <button
+                              className="bubble-tool-btn"
+                              title="Grounded in facts"
+                              onClick={() => onShowToast('Grounding accuracy verified at 99.8%', 'info')}
+                            >
+                              <ThumbsUp size={12} /> Grounded
+                            </button>
+                          </div>
+                        )}
+
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Citation Proof Drawer */}
+                {activeCitation && (
+                  <div className="citation-inspector-drawer">
+                    <div className="drawer-header">
+                      <div className="drawer-title">
+                        <Quote size={14} />
+                        <span>Source Citation [{activeCitation.index}] Grounding Proof</span>
+                      </div>
+                      <button className="drawer-close" onClick={() => setActiveCitation(null)}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                    <div className="drawer-body">
+                      <div className="drawer-metrics">
+                        <span className="metric-pill">Similarity: <strong>{activeCitation.score}</strong></span>
+                        <span className="metric-pill">Doc: <strong>{activeDoc.name}</strong></span>
+                        <span className="metric-pill">Chunk: <strong>#{activeCitation.chunkId} ({activeCitation.page})</strong></span>
+                      </div>
+                      <div className="drawer-quote-box">
+                        <p>"{activeCitation.quote}"</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Chat Input */}
+                <div className="chat-input-container">
+                  <form
+                    className="chat-input-box"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleSubmitQuery();
+                    }}
+                  >
+                    <div className="input-controls-left">
+                      <button
+                        type="button"
+                        className="tool-btn"
+                        title="Upload additional document"
+                        onClick={() => fileInputRef.current?.click()}
+                      >
+                        <Paperclip size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className="tool-btn"
+                        title="Switch to Vector Search"
+                        onClick={() => setActiveTab('search')}
+                      >
+                        <Search size={14} />
+                      </button>
                     </div>
 
-                    {msg.reasoningSteps && (
-                      <div className="reasoning-chain-box">
-                        <div className="reasoning-toggle-btn">
-                          <span>
-                            <Microchip size={12} style={{ display: 'inline', marginRight: 4 }} />
-                            Agent Retrieval & Reasoning Steps (4)
-                          </span>
-                        </div>
-                        <div className="reasoning-steps-list">
-                          {msg.reasoningSteps.map((step, sIdx) => (
-                            <div key={sIdx} className="reasoning-step-item">
-                              <Check size={12} className="text-emerald" /> {step}
+                    <textarea
+                      className="chat-textarea"
+                      placeholder="Ask any question about the document... (Press Enter to send)"
+                      rows={1}
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSubmitQuery();
+                        }
+                      }}
+                    />
+
+                    <div className="input-controls-right">
+                      <button
+                        type="button"
+                        className="tool-btn"
+                        title="Simulate voice question"
+                        onClick={() => {
+                          onShowToast('Listening for speech... (Simulated query loaded)', 'info');
+                          setChatInput('What was the total revenue increase in Q4?');
+                          setTimeout(() => handleSubmitQuery('What was the total revenue increase in Q4?'), 600);
+                        }}
+                      >
+                        <Mic size={14} />
+                      </button>
+                      <button
+                        type="submit"
+                        className="send-btn"
+                        disabled={isGenerating || !chatInput.trim()}
+                        title="Send question"
+                      >
+                        <ArrowUp size={14} />
+                      </button>
+                    </div>
+                  </form>
+
+                  <div className="chat-footer-hints">
+                    <span><kbd>Enter</kbd> to submit • <kbd>Shift + Enter</kbd> for newline</span>
+                    <span className="privacy-pill"><Lock size={10} /> In-Memory & Database Security Active</span>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* TAB 2: SEMANTIC VECTOR SEARCH & RETRIEVED CHUNKS */}
+            {activeTab === 'search' && (
+              <div className="vector-search-container">
+                
+                {/* Search Input Bar */}
+                <div className="vector-search-bar-wrap">
+                  <form
+                    className="vector-search-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleSemanticSearch();
+                    }}
+                  >
+                    <div className="search-input-inner">
+                      <Search size={16} className="search-icon-decor" />
+                      <input
+                        type="text"
+                        className="vector-search-input"
+                        placeholder="Search semantic chunks (e.g. 'financial risk factors', 'percentile score')..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                      {searchQuery && (
+                        <button
+                          type="button"
+                          className="search-clear-btn"
+                          onClick={() => setSearchQuery('')}
+                        >
+                          <X size={13} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="search-actions-row">
+                      <select
+                        value={searchDocScope}
+                        onChange={(e) => setSearchDocScope(e.target.value)}
+                        className="search-scope-select"
+                      >
+                        <option value="all">All Documents (DB & Memory)</option>
+                        <option value="current">Current: {activeDoc.name}</option>
+                      </select>
+
+                      <button
+                        type="submit"
+                        className="vector-search-submit-btn"
+                        disabled={isSearching || !searchQuery.trim()}
+                      >
+                        {isSearching ? (
+                          <>
+                            <RefreshCw size={14} className="spin" />
+                            <span>Embedding & Searching...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles size={14} />
+                            <span>Embed & Retrieve Chunks</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+
+                  {/* Suggested Query Quick Pills */}
+                  <div className="search-suggested-pills">
+                    <span className="suggested-label">Try:</span>
+                    {activeDoc.suggestedQueries.map((q, idx) => (
+                      <button
+                        key={idx}
+                        className="prompt-pill search-pill"
+                        onClick={() => handleSemanticSearch(q)}
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Vector Query Diagnostics Bar */}
+                {searchStats && (
+                  <div className="vector-stats-banner">
+                    <div className="stats-col">
+                      <span className="stats-tag-title"><Sparkles size={12} /> Model</span>
+                      <strong>{searchStats.model}</strong>
+                    </div>
+                    <div className="stats-col">
+                      <span className="stats-tag-title"><Database size={12} /> Vector Dimension</span>
+                      <strong>{searchStats.dimension}-D Dense Vector</strong>
+                    </div>
+                    <div className="stats-col">
+                      <span className="stats-tag-title"><Layers size={12} /> Vector Norm</span>
+                      <strong>{searchStats.norm}</strong>
+                    </div>
+                    <div className="stats-col">
+                      <span className="stats-tag-title"><Check size={12} /> Engine</span>
+                      <strong className="text-emerald">{searchStats.source.includes('pgvector') ? 'PostgreSQL pgvector (<=>)' : 'In-Memory Cosine'}</strong>
+                    </div>
+                    <div className="stats-col">
+                      <span className="stats-tag-title">⏱️ Latency</span>
+                      <strong>{searchStats.latencyMs} ms</strong>
+                    </div>
+                  </div>
+                )}
+
+                {/* Retrieved Chunks Display Viewport */}
+                <div className="retrieved-chunks-viewport">
+                  {isSearching ? (
+                    <div className="search-loading-state">
+                      <div className="pulse-loader-ring"></div>
+                      <h4>Converting Query to 768-D Vector Embedding...</h4>
+                      <p>Calculating Cosine Similarity across document chunks via PostgreSQL pgvector</p>
+                    </div>
+                  ) : retrievedChunks.length > 0 ? (
+                    <div className="chunks-results-list">
+                      <div className="results-header-count">
+                        <span>Top <strong>{retrievedChunks.length}</strong> Relevant Chunks Retrieved for "<em>{searchQuery}</em>":</span>
+                      </div>
+
+                      {retrievedChunks.map((chunk, idx) => {
+                        const isTop = idx === 0;
+                        const scorePct = Math.round(chunk.similarity * 100);
+
+                        return (
+                          <div key={chunk.id || idx} className={`retrieved-chunk-card ${isTop ? 'top-match' : ''}`}>
+                            <div className="chunk-card-header">
+                              <div className="chunk-badges-left">
+                                <span className={`rank-badge ${isTop ? 'rank-gold' : ''}`}>
+                                  Rank #{chunk.rank || idx + 1} {isTop && '• Top Match'}
+                                </span>
+                                <span className="doc-source-badge">
+                                  <FileText size={12} /> {chunk.documentTitle || 'Document'}
+                                </span>
+                                <span className="page-badge">
+                                  Page {chunk.pageNumber || 1}
+                                </span>
+                              </div>
+
+                              <div className="similarity-badge-wrap">
+                                <div className="sim-meter-bar">
+                                  <div
+                                    className="sim-meter-fill"
+                                    style={{
+                                      width: `${Math.max(5, Math.min(100, scorePct))}%`,
+                                      backgroundColor: scorePct > 70 ? '#10b981' : scorePct > 40 ? '#3b82f6' : '#f59e0b'
+                                    }}
+                                  ></div>
+                                </div>
+                                <span className="similarity-score-text">
+                                  {chunk.similarityFormatted || `${scorePct}%`} Match
+                                </span>
+                              </div>
                             </div>
+
+                            {/* Chunk Text Body */}
+                            <div className="chunk-card-body">
+                              <p className="chunk-text-content">{chunk.content}</p>
+                            </div>
+
+                            {/* Chunk Footer & Actions */}
+                            <div className="chunk-card-footer">
+                              <div className="chunk-metrics-meta">
+                                <span>~{chunk.tokenEstimate || Math.ceil(chunk.content.length / 4)} tokens</span>
+                                <span>•</span>
+                                <span>{chunk.charCount || chunk.content.length} chars</span>
+                                <span>•</span>
+                                <span>{chunk.wordCount || chunk.content.split(/\s+/).filter(Boolean).length} words</span>
+                                {chunk.chunkIndex !== undefined && (
+                                  <>
+                                    <span>•</span>
+                                    <span>Index #{chunk.chunkIndex}</span>
+                                  </>
+                                )}
+                              </div>
+
+                              <div className="chunk-actions-btns">
+                                <button
+                                  type="button"
+                                  className="chunk-action-btn"
+                                  title="Copy chunk text"
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(chunk.content);
+                                    onShowToast(`Chunk #${chunk.id} copied!`, 'success');
+                                  }}
+                                >
+                                  <Copy size={13} /> Copy
+                                </button>
+                                <button
+                                  type="button"
+                                  className="chunk-action-btn primary"
+                                  title="Send chunk to Agent Chat prompt"
+                                  onClick={() => handleUseChunkInChat(chunk)}
+                                >
+                                  <Send size={13} /> Ask in Chat
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="search-empty-state">
+                      <div className="empty-state-icon">
+                        <Search size={32} />
+                      </div>
+                      <h3>Ready for Semantic Vector Retrieval</h3>
+                      <p>Type any natural language question or topic above to generate a <strong>768-d Gemini embedding</strong> and retrieve the most relevant chunks via <strong>PostgreSQL pgvector</strong>.</p>
+                      
+                      <div className="sample-queries-box">
+                        <span className="sample-title">Click a suggested query to test:</span>
+                        <div className="sample-pills-list">
+                          {activeDoc.suggestedQueries.map((q, idx) => (
+                            <button
+                              key={idx}
+                              className="sample-query-pill"
+                              onClick={() => handleSemanticSearch(q)}
+                            >
+                              <Sparkles size={12} /> {q}
+                            </button>
                           ))}
                         </div>
                       </div>
-                    )}
-
-                    <div className="ai-answer-text">
-                      {renderMessageContent(msg.text, msg.citations)}
                     </div>
-
-                    {msg.sender === 'ai' && (
-                      <div className="bubble-actions-toolbar">
-                        <button
-                          className="bubble-tool-btn"
-                          title="Copy answer"
-                          onClick={() => handleCopyAnswer(msg.text)}
-                        >
-                          <Copy size={12} /> Copy
-                        </button>
-                        <button
-                          className="bubble-tool-btn"
-                          title="Listen to answer"
-                          onClick={() => handleTTS(msg.text)}
-                        >
-                          <Volume2 size={12} /> Read
-                        </button>
-                        <button
-                          className="bubble-tool-btn"
-                          title="Grounded in facts"
-                          onClick={() => onShowToast('Grounding accuracy verified at 99.8%', 'info')}
-                        >
-                          <ThumbsUp size={12} /> Grounded
-                        </button>
-                      </div>
-                    )}
-
-                  </div>
+                  )}
                 </div>
-              ))}
-            </div>
 
-            {/* Citation Proof Drawer */}
-            {activeCitation && (
-              <div className="citation-inspector-drawer">
-                <div className="drawer-header">
-                  <div className="drawer-title">
-                    <Quote size={14} />
-                    <span>Source Citation [{activeCitation.index}] Grounding Proof</span>
-                  </div>
-                  <button className="drawer-close" onClick={() => setActiveCitation(null)}>
-                    <X size={14} />
-                  </button>
-                </div>
-                <div className="drawer-body">
-                  <div className="drawer-metrics">
-                    <span className="metric-pill">Similarity: <strong>{activeCitation.score}</strong></span>
-                    <span className="metric-pill">Doc: <strong>{activeDoc.name}</strong></span>
-                    <span className="metric-pill">Chunk: <strong>#{activeCitation.chunkId} ({activeCitation.page})</strong></span>
-                  </div>
-                  <div className="drawer-quote-box">
-                    <p>"{activeCitation.quote}"</p>
-                  </div>
-                </div>
               </div>
             )}
-
-            {/* Chat Input */}
-            <div className="chat-input-container">
-              <form
-                className="chat-input-box"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  handleSubmitQuery();
-                }}
-              >
-                <div className="input-controls-left">
-                  <button
-                    type="button"
-                    className="tool-btn"
-                    title="Upload additional document"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Paperclip size={14} />
-                  </button>
-                  <button
-                    type="button"
-                    className="tool-btn"
-                    title="Toggle Hybrid/Graph RAG"
-                    onClick={() => onShowToast('Retriever Mode: Hybrid Dense + BM25 active', 'info')}
-                  >
-                    <Sliders size={14} />
-                  </button>
-                </div>
-
-                <textarea
-                  className="chat-textarea"
-                  placeholder="Ask any question about the document... (Press Enter to send)"
-                  rows={1}
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSubmitQuery();
-                    }
-                  }}
-                />
-
-                <div className="input-controls-right">
-                  <button
-                    type="button"
-                    className="tool-btn"
-                    title="Simulate voice question"
-                    onClick={() => {
-                      onShowToast('Listening for speech... (Simulated query loaded)', 'info');
-                      setChatInput('What was the total revenue increase in Q4?');
-                      setTimeout(() => handleSubmitQuery('What was the total revenue increase in Q4?'), 600);
-                    }}
-                  >
-                    <Mic size={14} />
-                  </button>
-                  <button
-                    type="submit"
-                    className="send-btn"
-                    disabled={isGenerating || !chatInput.trim()}
-                    title="Send question"
-                  >
-                    <ArrowUp size={14} />
-                  </button>
-                </div>
-              </form>
-
-              <div className="chat-footer-hints">
-                <span><kbd>Enter</kbd> to submit • <kbd>Shift + Enter</kbd> for newline</span>
-                <span className="privacy-pill"><Lock size={10} /> In-Memory Privacy Active</span>
-              </div>
-            </div>
 
           </div>
 
