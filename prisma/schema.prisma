@@ -40,6 +40,7 @@ model Document {
   id            String   @id @default(cuid())   // Unique Primary Key
   title         String                          // Document / file title
   filename      String?                         // Original filename (e.g., syllabus.pdf)
+  storageKey    String?  @map("storage_key")     // Google Cloud Storage object path (e.g., users/uid/docId/uuid-file.pdf)
   fileSize      Int?                            // File size in bytes
   sizeFormatted String?                         // Formatted size (e.g. 2.4 MB, 450 KB)
   totalPages    Int?     @default(1)            // Total extracted page count

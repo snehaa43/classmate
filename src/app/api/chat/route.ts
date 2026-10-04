@@ -1,147 +1,116 @@
 import { NextResponse } from 'next/server';
-import { KNOWLEDGE_BASE } from '@/data/knowledgeBase';
-import { tempPdfStore } from '@/lib/pdfParser';
-import { searchPdfChunks, generateEmbedding, getGenAIClient, getGeminiApiKey } from '@/lib/embeddings';
-import { searchChunksWithPgvector, getStoredDocumentById } from '@/lib/documentStorage';
+import { getAuthUser } from '@/lib/auth';
+import { executeGroundedRag, NO_INFO_MESSAGE } from '@/lib/rag';
 
+/**
+ * ============================================================================
+ * POST /api/chat
+ * ============================================================================
+ * Authenticated RAG Question Answering Route:
+ * 1. Validates incoming question
+ * 2. Identifies authenticated user session
+ * 3. Verifies document ownership
+ * 4. Generates query embedding & searches pgvector
+ * 5. Injects retrieved context into prompt
+ * 6. Invokes Gemini LLM
+ * 7. Returns grounded answer with sources and pipeline steps
+ */
 export async function POST(request: Request) {
   try {
-    const body = await request.json();
-    const { query, documentId = 'finance', model = 'gemini-3.5-flash' } = body;
+    const body = await request.json().catch(() => ({}));
+    const question = body.question || body.prompt || body.message || body.query;
+    const documentId = body.documentId || undefined;
+    const model = body.model || 'gemini-3.8-flash';
 
-    if (!query) {
-      return NextResponse.json({ error: 'Query parameter is required' }, { status: 400 });
+    // 1. Validation: Ensure a question was provided
+    if (!question || typeof question !== 'string' || question.trim().length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Question parameter is required and must be a non-empty string.'
+        },
+        { status: 400 }
+      );
     }
 
-    const latencyStart = Date.now();
+    // 2. Identify Authenticated User (from session cookie)
+    const authUser = await getAuthUser();
+    const userId = authUser ? authUser.userId : null;
 
-    // 1. Check if document exists in PostgreSQL Database or temporary in-memory store
-    const dbDoc = await getStoredDocumentById(documentId);
-    const tempDoc = tempPdfStore.get(documentId);
-    const kbDoc = KNOWLEDGE_BASE[documentId];
-    const docName = dbDoc?.title || dbDoc?.filename || tempDoc?.filename || kbDoc?.name || 'Document';
+    // 3. Execute Complete Grounded RAG Pipeline
+    const ragResult = await executeGroundedRag({
+      question: question.trim(),
+      documentId,
+      userId,
+      model
+    });
 
-    let citations: any[] = [];
-    let answer = '';
-
-    // Step A: Attempt pgvector search from PostgreSQL
-    if (dbDoc && dbDoc.chunks && dbDoc.chunks.length > 0) {
-      try {
-        const queryVector = await generateEmbedding(query, { model: 'gemini-embedding-001' });
-        const vectorResults = await searchChunksWithPgvector(queryVector, {
-          documentId,
-          topK: 3
-        });
-
-        if (vectorResults && vectorResults.length > 0) {
-          citations = vectorResults.map((res, idx) => ({
-            index: idx + 1,
-            chunkId: res.id,
-            page: res.pageNumber ? `Page ${res.pageNumber}` : `Chunk #${idx + 1}`,
-            score: res.similarityFormatted,
-            quote: res.content
-          }));
-        }
-      } catch (dbErr) {
-        console.warn('[Chat Route] pgvector search fallback:', dbErr);
-      }
+    if (!ragResult.success && ragResult.error === 'Forbidden document access') {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'Access denied: You do not have permission to query this document.',
+          answer: 'Access denied: You do not have permission to query this document.',
+          sources: []
+        },
+        { status: 403 }
+      );
     }
 
-    // Step B: Fallback to in-memory chunks if citations not found from PostgreSQL
-    if (citations.length === 0 && tempDoc && tempDoc.chunks && tempDoc.chunks.length > 0) {
-      // Perform semantic vector retrieval over the PDF chunks
-      const searchResults = await searchPdfChunks(query, tempDoc.chunks, { topK: 3 });
-
-      citations = searchResults.map((res: any, idx: number) => ({
-        index: idx + 1,
-        chunkId: (res.chunk as any)?.id || idx + 1,
-        page: (res.chunk as any)?.pageNumber ? `Page ${(res.chunk as any).pageNumber}` : `Chunk #${idx + 1}`,
-        score: res.similarityFormatted,
-        quote: (res.chunk as any)?.text || ''
-      }));
-    }
-
-    if (citations.length > 0) {
-      // Try generating grounded response using Gemini
-      const apiKey = getGeminiApiKey();
-      if (apiKey && citations.length > 0) {
-        try {
-          const ai = getGenAIClient();
-          const contextPrompt = citations
-            .map((c) => `[Citation #${c.index} - ${c.page}]: ${c.quote}`)
-            .join('\n\n');
-
-          const prompt = `You are Classmate RAG AI Assistant. Answer the student's question based strictly on the following excerpted citations from "${docName}".
-Cite your facts using [#1], [#2], etc. matching the citation index.
-
-Context:
-${contextPrompt}
-
-Question: ${query}
-
-Answer concisely with citations:`;
-
-          const genResult = await ai.models.generateContent({
-            model: 'gemini-3.5-flash',
-            contents: prompt
-          });
-
-          if (genResult && genResult.text) {
-            answer = genResult.text.trim();
-          }
-        } catch (genErr: any) {
-          console.warn('[Chat Route] Gemini generateContent skipped:', genErr?.message || genErr);
-        }
-      }
-
-      if (!answer && citations.length > 0) {
-        const top = citations[0];
-        const second = citations[1] || top;
-        answer = `Based on semantic retrieval from **${docName}** [#1], "${top.quote.substring(0, 160)}..." [#1]. Contextual cross-referencing with ${second.page} [#2] confirms: "${second.quote.substring(0, 140)}..." [#2].`;
-      }
-    } else {
-      // Fallback to Knowledge Base mock or QA database
-      const doc = kbDoc || KNOWLEDGE_BASE.finance;
-      const qLower = query.toLowerCase();
-
-      let matchedQA = null;
-      if (doc.qaDatabase) {
-        for (const [key, val] of Object.entries(doc.qaDatabase)) {
-          if (qLower.includes(key)) {
-            matchedQA = val;
-            break;
-          }
-        }
-      }
-
-      if (!matchedQA) {
-        const topChunk = doc.chunks[0];
-        const secondChunk = doc.chunks[1] || topChunk;
-        matchedQA = {
-          answer: `Based on vector retrieval from ${doc.name} [#1], ${topChunk.text.substring(0, 140)}... [#1]. Contextual cross-referencing [#2] confirms related parameters.`,
-          citations: [
-            { index: 1, chunkId: topChunk.id, page: topChunk.range, score: '98.4%', quote: topChunk.text },
-            { index: 2, chunkId: secondChunk.id, page: secondChunk.range, score: '96.2%', quote: secondChunk.text }
-          ]
-        };
-      }
-
-      answer = matchedQA.answer;
-      citations = matchedQA.citations;
-    }
-
+    // 4. Return standard JSON response matching specification
     return NextResponse.json({
       success: true,
-      model,
-      document: docName,
-      answer,
-      citations,
-      latencyMs: Date.now() - latencyStart || Math.floor(120 + Math.random() * 40)
+      question: ragResult.question,
+      answer: ragResult.answer,
+      document: ragResult.documentTitle,
+      documentId: ragResult.documentId,
+      sources: ragResult.sources,
+      citations: ragResult.citations,
+      pipeline: ragResult.pipeline,
+      model: ragResult.model
     });
   } catch (error: any) {
+    console.error('[API /api/chat Error]:', error);
     return NextResponse.json(
-      { error: error?.message || 'Internal Server Error' },
+      {
+        success: false,
+        error: error?.message || 'An internal server error occurred while processing the RAG chat request.',
+        answer: NO_INFO_MESSAGE,
+        sources: []
+      },
       { status: 500 }
     );
   }
+}
+
+/**
+ * ============================================================================
+ * GET /api/chat
+ * ============================================================================
+ * Allows querying via URL query parameters for fast testing:
+ * ?question=...&documentId=...
+ */
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const question = searchParams.get('question') || searchParams.get('prompt') || searchParams.get('query') || searchParams.get('q');
+  const documentId = searchParams.get('documentId') || searchParams.get('docId') || undefined;
+  const model = searchParams.get('model') || 'gemini-3.8-flash';
+
+  if (!question) {
+    return NextResponse.json(
+      {
+        success: false,
+        error: 'Please provide a question in the URL parameter "?question=..." or "?q=..."'
+      },
+      { status: 400 }
+    );
+  }
+
+  const mockPostRequest = new Request(request.url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, documentId, model })
+  });
+
+  return POST(mockPostRequest);
 }

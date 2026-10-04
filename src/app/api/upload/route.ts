@@ -3,11 +3,14 @@ import { parsePdfPageByPage, tempPdfStore, chunkPages } from '@/lib/pdfParser';
 import { embedChunks } from '@/lib/embeddings';
 import { getAuthUser } from '@/lib/auth';
 import { saveDocumentWithChunksAndEmbeddings } from '@/lib/documentStorage';
+import { uploadPDF, deletePDF, isGcsConfigured } from '@/lib/storage';
 
 // Action: Define maximum allowable file size (50MB in bytes)
 const MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024;
 
 export async function POST(request: Request) {
+  let uploadedGcsKey: string | null = null;
+
   try {
     // ------------------------------------------------------------------------
     // ACTION 1: Validate Request Content-Type Header
@@ -98,17 +101,77 @@ export async function POST(request: Request) {
     }
 
     // ------------------------------------------------------------------------
-    // ACTION 6: Parse PDF, Clean and Extract Text Page by Page
+    // ACTION 6: Authenticate User Session & Generate Document Identifier
     // ------------------------------------------------------------------------
-    const { pages, totalPages, totalWords, totalChars } = await parsePdfPageByPage(buffer);
+    const authUser = await getAuthUser().catch(() => null);
+    const userId = authUser?.userId || null;
+    const docId = `pdf_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     // ------------------------------------------------------------------------
-    // ACTION 7: Chunk Extracted Text Page by Page into Semantic Chunks
+    // ACTION 7: Upload PDF Binary to Google Cloud Storage (GCS)
+    // Key pattern: users/{userId}/{docId}/{uuid}-{sanitizedName}.pdf
+    // ------------------------------------------------------------------------
+    if (isGcsConfigured()) {
+      try {
+        const gcsResult = await uploadPDF({
+          buffer,
+          filename: file.name,
+          userId,
+          documentId: docId,
+          metadata: {
+            uploadedByEmail: authUser?.email || 'anonymous',
+          }
+        });
+        uploadedGcsKey = gcsResult.storageKey;
+      } catch (gcsErr: any) {
+        console.error('[Upload Route] Google Cloud Storage Upload Failed:', gcsErr);
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Failed to store PDF in Google Cloud Storage: ${gcsErr?.message || 'Storage upload error'}`
+          },
+          { status: 500 }
+        );
+      }
+    } else {
+      console.warn('[Upload Route] GCS_BUCKET_NAME is not set; proceeding with in-memory & PostgreSQL storage.');
+    }
+
+    // ------------------------------------------------------------------------
+    // ACTION 8: Parse PDF, Clean and Extract Text Page by Page
+    // ------------------------------------------------------------------------
+    let pages;
+    let totalPages = 1;
+    let totalWords = 0;
+    let totalChars = 0;
+
+    try {
+      const parsed = await parsePdfPageByPage(buffer);
+      pages = parsed.pages;
+      totalPages = parsed.totalPages;
+      totalWords = parsed.totalWords;
+      totalChars = parsed.totalChars;
+    } catch (parseErr: any) {
+      // If parsing fails after GCS upload, cleanup the uploaded GCS object
+      if (uploadedGcsKey) {
+        await deletePDF(uploadedGcsKey).catch(() => {});
+      }
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Failed to parse PDF text content: ${parseErr?.message || parseErr}`
+        },
+        { status: 422 }
+      );
+    }
+
+    // ------------------------------------------------------------------------
+    // ACTION 9: Chunk Extracted Text Page by Page into Semantic Chunks
     // ------------------------------------------------------------------------
     let chunks = chunkPages(pages);
 
     // ------------------------------------------------------------------------
-    // ACTION 7b: Vectorize PDF Chunks with Google GenAI Embeddings (768-d)
+    // ACTION 10: Vectorize PDF Chunks with Google GenAI Embeddings (768-d)
     // ------------------------------------------------------------------------
     let isEmbedded = false;
     let embeddingDimension = 0;
@@ -126,16 +189,12 @@ export async function POST(request: Request) {
     }
 
     // ------------------------------------------------------------------------
-    // ACTION 8: Format Document Metadata
+    // ACTION 11: Format Document Metadata & Cache in In-Memory Store
     // ------------------------------------------------------------------------
-    const docId = `pdf_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const sizeFormatted = file.size > 1024 * 1024
       ? `${(file.size / (1024 * 1024)).toFixed(2)} MB`
       : `${Math.round(file.size / 1024)} KB`;
 
-    // ------------------------------------------------------------------------
-    // ACTION 9: Store Extracted Text & Chunks in In-Memory Cache (TTL: 1 hour)
-    // ------------------------------------------------------------------------
     const storedDocument = tempPdfStore.save({
       id: docId,
       filename: file.name,
@@ -150,20 +209,20 @@ export async function POST(request: Request) {
     });
 
     // ------------------------------------------------------------------------
-    // ACTION 10: Store Document & Page Metadata + Chunks + vector(768) Embeddings in PostgreSQL
+    // ACTION 12: Store Document Metadata + GCS storageKey + Chunks + pgvector Embeddings in PostgreSQL
     // ------------------------------------------------------------------------
     let dbPersisted = false;
     let dbError: string | null = null;
     let dbResult: any = null;
 
     try {
-      const authUser = await getAuthUser();
       const customTitle = (formData.get('title') as string) || file.name;
 
       dbResult = await saveDocumentWithChunksAndEmbeddings({
         id: docId,
         title: customTitle,
         filename: file.name,
+        storageKey: uploadedGcsKey,
         fileSize: file.size,
         sizeFormatted,
         totalPages,
@@ -171,12 +230,14 @@ export async function POST(request: Request) {
         totalChars,
         mimeType: file.type || 'application/pdf',
         pages,
-        userId: authUser?.userId || null,
+        userId,
         metadata: {
           embedded: isEmbedded,
           dimension: embeddingDimension,
           originalName: file.name,
-          clientMime: file.type
+          clientMime: file.type,
+          storageKey: uploadedGcsKey,
+          gcsStored: Boolean(uploadedGcsKey)
         },
         chunks
       });
@@ -188,12 +249,17 @@ export async function POST(request: Request) {
     }
 
     // ------------------------------------------------------------------------
-    // ACTION 11: Return Comprehensive JSON Response
+    // ACTION 13: Return Comprehensive JSON Response
     // ------------------------------------------------------------------------
     return NextResponse.json({
       success: true,
-      message: `PDF parsed successfully! Extracted ${totalPages} page(s), ${totalWords.toLocaleString()} words, and generated ${chunks.length} chunks${isEmbedded ? ` with ${embeddingDimension}-d vector embeddings` : ''}.`,
-      document: storedDocument,
+      message: `PDF parsed and stored successfully! Extracted ${totalPages} page(s), ${totalWords.toLocaleString()} words, and generated ${chunks.length} chunks${isEmbedded ? ` with ${embeddingDimension}-d vector embeddings` : ''}.`,
+      document: {
+        ...storedDocument,
+        storageKey: uploadedGcsKey,
+      },
+      storageKey: uploadedGcsKey,
+      gcsStored: Boolean(uploadedGcsKey),
       persistedInDatabase: dbPersisted,
       dbDocumentId: dbResult?.document?.id || docId,
       dbError: dbError || undefined,
@@ -208,10 +274,13 @@ export async function POST(request: Request) {
     });
 
   } catch (error: any) {
+    if (uploadedGcsKey) {
+      await deletePDF(uploadedGcsKey).catch(() => {});
+    }
     return NextResponse.json(
       {
         success: false,
-        error: error?.message || 'Internal server error while parsing PDF.'
+        error: error?.message || 'Internal server error while processing PDF upload.'
       },
       { status: 500 }
     );

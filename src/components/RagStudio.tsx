@@ -50,7 +50,7 @@ interface ChatMessage {
 }
 
 interface RetrievedChunkItem {
-  id: string;
+  id: string | number;
   documentId: string;
   documentTitle: string;
   documentFilename?: string;
@@ -63,6 +63,24 @@ interface RetrievedChunkItem {
   tokenEstimate: number;
   charCount: number;
   wordCount: number;
+  matchedKeywords?: string[];
+  matchCount?: number;
+  searchMode?: 'keyword' | 'vector' | 'hybrid';
+  metadata?: any;
+}
+
+interface RetrievedDocItem {
+  id: string;
+  title: string;
+  filename?: string;
+  category?: string;
+  totalPages: number;
+  totalChunks: number;
+  totalWords: number;
+  matchScore: number;
+  matchedKeywords: string[];
+  matchingChunksCount: number;
+  topMatchingChunks: RetrievedChunkItem[];
   metadata?: any;
 }
 
@@ -80,13 +98,15 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [activeCitation, setActiveCitation] = useState<Citation | null>(null);
   
-  // Vector Search & Chunk Retriever State
+  // Search Engine & Multi-Mode Retriever State
   const [activeTab, setActiveTab] = useState<'chat' | 'search'>('chat');
+  const [searchMode, setSearchMode] = useState<'keyword' | 'vector' | 'hybrid' | 'document'>('keyword');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSearching, setIsSearching] = useState<boolean>(false);
   const [searchDocScope, setSearchDocScope] = useState<string>('all');
   const [searchTopK, setSearchTopK] = useState<number>(4);
   const [retrievedChunks, setRetrievedChunks] = useState<RetrievedChunkItem[]>([]);
+  const [retrievedDocs, setRetrievedDocs] = useState<RetrievedDocItem[]>([]);
   const [searchStats, setSearchStats] = useState<{
     model: string;
     dimension: number;
@@ -94,6 +114,7 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
     latencyMs: number;
     source: string;
     totalResults: number;
+    searchMode?: string;
   } | null>(null);
 
   const [uploadProgress, setUploadProgress] = useState<{ active: boolean; text: string; percent: number }>({
@@ -101,6 +122,9 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
     text: '',
     percent: 0
   });
+
+  // Active End-to-End Pipeline Stage Indicator
+  const [activePipelineStage, setActivePipelineStage] = useState<'pdf' | 'extract' | 'clean' | 'chunk' | 'embed' | 'store' | 'retrieve' | 'llm' | 'answer' | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -135,19 +159,33 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
   const handleFileUpload = async (file: File) => {
     if (!file) return;
 
-    setUploadProgress({ active: true, text: `Parsing ${file.name}...`, percent: 20 });
+    setActivePipelineStage('pdf');
+    setUploadProgress({ active: true, text: `Parsing ${file.name}...`, percent: 15 });
 
     const progressTimer = setInterval(() => {
       setUploadProgress((prev) => {
         if (prev.percent >= 85) return prev;
-        const next = prev.percent + 20;
+        const next = prev.percent + 18;
         let txt = prev.text;
-        if (next >= 40) txt = 'Extracting text layout & pages...';
-        if (next >= 65) txt = 'Generating 3072-d Gemini embeddings...';
-        if (next >= 85) txt = 'Indexing vector chunks into store...';
+        if (next >= 30) {
+          txt = 'Extracting text layout & pages...';
+          setActivePipelineStage('extract');
+        }
+        if (next >= 50) {
+          txt = 'Cleaning text & sanitizing symbols...';
+          setActivePipelineStage('clean');
+        }
+        if (next >= 65) {
+          txt = 'Chunking into semantic passages...';
+          setActivePipelineStage('chunk');
+        }
+        if (next >= 80) {
+          txt = 'Generating 768-d Gemini embeddings...';
+          setActivePipelineStage('embed');
+        }
         return { active: true, text: txt, percent: next };
       });
-    }, 300);
+    }, 280);
 
     const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf';
 
@@ -264,9 +302,11 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
     setCustomDoc(newDoc);
     setCurrentDocId(docId);
     setSelectedChunkIndex(0);
+    setActivePipelineStage('store');
 
     setTimeout(() => {
       setUploadProgress({ active: false, text: '', percent: 0 });
+      setActivePipelineStage(null);
       onShowToast(`Successfully indexed ${fileName} (${rawChunks.length} vector chunks)`, 'success');
       setMessages((prev) => [
         ...prev,
@@ -281,6 +321,7 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
   };
 
   const finalizeUpload = (fileName: string, rawText: string) => {
+    setActivePipelineStage('store');
     setUploadProgress({ active: true, text: 'Document Vectorized Successfully!', percent: 100 });
 
     const chunkSize = 400;
@@ -335,6 +376,7 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
 
     setTimeout(() => {
       setUploadProgress({ active: false, text: '', percent: 0 });
+      setActivePipelineStage(null);
       onShowToast(`Successfully indexed ${fileName} (${rawChunks.length} chunks)`, 'success');
       setMessages((prev) => [
         ...prev,
@@ -353,6 +395,8 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
     const q = (queryText || chatInput).trim();
     if (!q || isGenerating) return;
 
+    setActivePipelineStage('retrieve');
+
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       sender: 'user',
@@ -367,26 +411,31 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
     const aiMsgId = `ai-${Date.now()}`;
 
     try {
-      // Call real RAG Chat API with documentId and query
+      // Call real RAG Chat API with documentId and question
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query: q,
+          question: q,
           documentId: currentDocId,
           model: selectedModel
         })
       });
 
+      setActivePipelineStage('llm');
       const data = await res.json();
 
       if (data.success && data.answer) {
-        const reasoningSteps = [
-          '1. Query embedded via @google/genai (gemini-embedding-001)',
-          `2. Cosine similarity computed against ${activeDoc.chunks.length} PDF vector chunks`,
-          `3. Grounded citation context assembled: ${data.citations?.[0]?.score || '98.5%'} top match`,
-          `4. Verified response synthesized via ${data.model || selectedModel}`
-        ];
+        setActivePipelineStage('answer');
+        const reasoningSteps = (data.pipeline?.steps && data.pipeline.steps.length > 0)
+          ? data.pipeline.steps.map((s: any) => `${s.step}. ${s.name}: ${s.description}`)
+          : [
+              '1. Question Ingested & Validated',
+              `2. Retrieved ${data.sources?.length || activeDoc.chunks.length} chunks via PostgreSQL pgvector (<=>)`,
+              '3. Injected strict grounded context into prompt',
+              `4. Gemini LLM completion synthesized via ${data.model || selectedModel}`,
+              '5. Grounded Answer verified with source citations'
+            ];
 
         setMessages((prev) => [
           ...prev,
@@ -401,6 +450,7 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
           }
         ]);
         setIsGenerating(false);
+        setTimeout(() => setActivePipelineStage(null), 3500);
         return;
       }
     } catch (apiErr) {
@@ -471,22 +521,27 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
     }
   };
 
-  // Semantic Vector Search Handler
-  const handleSemanticSearch = async (queryText?: string) => {
+  // Multi-Mode Search Handler (Keyword, Vector, Hybrid, Document Search)
+  const handleSemanticSearch = async (queryText?: string, modeOverride?: 'keyword' | 'vector' | 'hybrid' | 'document') => {
     const q = (queryText || searchQuery).trim();
     if (!q || isSearching) return;
 
+    const activeMode = modeOverride || searchMode;
     setIsSearching(true);
     setSearchQuery(q);
 
     try {
-      const targetDocId = searchDocScope === 'all' ? undefined : (currentDocId === 'custom' && customDoc ? customDoc.id : currentDocId);
+      const isDocSearch = activeMode === 'document';
+      const targetDocId = isDocSearch || searchDocScope === 'all' ? undefined : (currentDocId === 'custom' && customDoc ? customDoc.id : currentDocId);
+      
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           query: q,
           documentId: targetDocId,
+          mode: isDocSearch ? 'keyword' : activeMode,
+          searchType: isDocSearch ? 'documents' : 'chunks',
           topK: searchTopK,
           model: 'gemini-embedding-001'
         })
@@ -495,21 +550,38 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
       const data = await res.json();
 
       if (data.success) {
-        setRetrievedChunks(data.chunks || []);
-        setSearchStats({
-          model: data.queryEmbedding?.model || 'gemini-embedding-001',
-          dimension: data.queryEmbedding?.dimension || 768,
-          norm: data.queryEmbedding?.vectorNorm || '1.000',
-          latencyMs: data.latencyMs || 0,
-          source: data.searchParameters?.retrievalSource || 'postgresql_pgvector',
-          totalResults: data.totalResults || (data.chunks?.length || 0)
-        });
-        onShowToast(`Retrieved ${data.chunks?.length || 0} chunks (${data.latencyMs}ms)`, 'success');
+        if (isDocSearch) {
+          setRetrievedDocs(data.documents || []);
+          setRetrievedChunks([]);
+          setSearchStats({
+            model: 'Full-Text Lexical Index',
+            dimension: 0,
+            norm: 'N/A',
+            latencyMs: data.latencyMs || 0,
+            source: data.searchParameters?.retrievalSource || 'postgresql_fulltext',
+            totalResults: data.totalResults || (data.documents?.length || 0),
+            searchMode: 'document'
+          });
+          onShowToast(`Found ${data.documents?.length || 0} matching document(s) (${data.latencyMs}ms)`, 'success');
+        } else {
+          setRetrievedChunks(data.chunks || []);
+          setRetrievedDocs([]);
+          setSearchStats({
+            model: data.queryEmbedding?.model || (activeMode === 'keyword' ? 'BM25 Sparse Lexical' : 'gemini-embedding-001'),
+            dimension: data.queryEmbedding?.dimension || (activeMode === 'keyword' ? 0 : 768),
+            norm: data.queryEmbedding?.vectorNorm || '1.000',
+            latencyMs: data.latencyMs || 0,
+            source: data.searchParameters?.retrievalSource || (activeMode === 'keyword' ? 'BM25 Lexical Store' : 'postgresql_pgvector'),
+            totalResults: data.totalResults || (data.chunks?.length || 0),
+            searchMode: activeMode
+          });
+          onShowToast(`Retrieved ${data.chunks?.length || 0} matching chunks (${data.latencyMs}ms)`, 'success');
+        }
       } else {
-        onShowToast(data.error || 'Vector search returned no results', 'error');
+        onShowToast(data.error || 'Search returned no results', 'error');
       }
     } catch (err: any) {
-      console.error('Semantic search error:', err);
+      console.error('Search error:', err);
       onShowToast(err?.message || 'Search failed', 'error');
     } finally {
       setIsSearching(false);
@@ -574,6 +646,65 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
           <p className="section-subtitle">
             Select sample enterprise documents or upload your own file. Ask questions, explore indexed vector chunks, and inspect verbatim citations with real-time similarity metrics.
           </p>
+        </div>
+
+        {/* Complete End-to-End RAG Architecture Banner */}
+        <div className="pipeline-flow-banner-card">
+          <div className="flow-card-header">
+            <div className="flow-title-wrap">
+              <Layers size={15} className="flow-title-icon" />
+              <span className="flow-title-text">COMPLETE END-TO-END RAG ARCHITECTURE</span>
+            </div>
+            <span className="flow-status-badge">
+              {activePipelineStage ? `Live Processing: ${activePipelineStage.toUpperCase()}` : 'Connected: PDF → Chunk → Vector DB → Gemini LLM'}
+            </span>
+          </div>
+
+          <div className="pipeline-steps-flow">
+            <div className={`flow-step-pill ${activePipelineStage === 'pdf' ? 'active-step' : ''} permanent-active`}>
+              <span>PDF</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'extract' ? 'active-step' : ''}`}>
+              <span>Extract</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'clean' ? 'active-step' : ''}`}>
+              <span>Clean</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'chunk' ? 'active-step' : ''}`}>
+              <span>Chunk</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'embed' ? 'active-step highlight-embed' : 'highlight-embed'}`}>
+              <span>Embed</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'store' ? 'active-step' : ''}`}>
+              <span>Store</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'retrieve' ? 'active-step highlight-retrieve' : 'highlight-retrieve'}`}>
+              <span>Retrieve</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'llm' ? 'active-step' : ''}`}>
+              <span>LLM</span>
+            </div>
+            <span className="flow-arrow">→</span>
+
+            <div className={`flow-step-pill ${activePipelineStage === 'answer' ? 'active-step' : ''} permanent-active`}>
+              <span>Answer</span>
+            </div>
+          </div>
         </div>
 
         {/* Studio Grid */}
@@ -961,10 +1092,113 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
               </>
             )}
 
-            {/* TAB 2: SEMANTIC VECTOR SEARCH & RETRIEVED CHUNKS */}
+            {/* TAB 2: MULTI-MODE SEARCH & RETRIEVED CHUNKS */}
             {activeTab === 'search' && (
               <div className="vector-search-container">
                 
+                {/* Search Mode Switcher Bar */}
+                <div className="search-modes-tabs-bar" style={{ display: 'flex', gap: '6px', padding: '0.75rem 1.25rem 0.4rem', borderBottom: '1px solid var(--border-subtle)', background: 'var(--bg-card)' }}>
+                  <button
+                    type="button"
+                    className={`mode-toggle-btn ${searchMode === 'keyword' ? 'active' : ''}`}
+                    onClick={() => {
+                      setSearchMode('keyword');
+                      if (searchQuery) handleSemanticSearch(searchQuery, 'keyword');
+                    }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: 'var(--radius-xs)',
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      background: searchMode === 'keyword' ? 'var(--text-primary)' : 'var(--bg-secondary)',
+                      color: searchMode === 'keyword' ? 'var(--bg-primary)' : 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <Search size={13} />
+                    <span>Keyword Search (BM25)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`mode-toggle-btn ${searchMode === 'vector' ? 'active' : ''}`}
+                    onClick={() => {
+                      setSearchMode('vector');
+                      if (searchQuery) handleSemanticSearch(searchQuery, 'vector');
+                    }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: 'var(--radius-xs)',
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      background: searchMode === 'vector' ? 'var(--text-primary)' : 'var(--bg-secondary)',
+                      color: searchMode === 'vector' ? 'var(--bg-primary)' : 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <Sparkles size={13} />
+                    <span>Vector Search (768-d)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`mode-toggle-btn ${searchMode === 'hybrid' ? 'active' : ''}`}
+                    onClick={() => {
+                      setSearchMode('hybrid');
+                      if (searchQuery) handleSemanticSearch(searchQuery, 'hybrid');
+                    }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: 'var(--radius-xs)',
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      background: searchMode === 'hybrid' ? 'var(--text-primary)' : 'var(--bg-secondary)',
+                      color: searchMode === 'hybrid' ? 'var(--bg-primary)' : 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <Layers size={13} />
+                    <span>Hybrid (BM25 + Vector)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className={`mode-toggle-btn ${searchMode === 'document' ? 'active' : ''}`}
+                    onClick={() => {
+                      setSearchMode('document');
+                      if (searchQuery) handleSemanticSearch(searchQuery, 'document');
+                    }}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '0.35rem 0.75rem',
+                      borderRadius: 'var(--radius-xs)',
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      background: searchMode === 'document' ? 'var(--text-primary)' : 'var(--bg-secondary)',
+                      color: searchMode === 'document' ? 'var(--bg-primary)' : 'var(--text-secondary)',
+                      border: '1px solid var(--border-subtle)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <FileText size={13} />
+                    <span>Document Search</span>
+                  </button>
+                </div>
+
                 {/* Search Input Bar */}
                 <div className="vector-search-bar-wrap">
                   <form
@@ -979,7 +1213,13 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
                       <input
                         type="text"
                         className="vector-search-input"
-                        placeholder="Search semantic chunks (e.g. 'financial risk factors', 'percentile score')..."
+                        placeholder={
+                          searchMode === 'document'
+                            ? "Search documents by title, tags, or topic keywords (e.g. 'Financial', 'Agentic RAG', 'Phase 3')..."
+                            : searchMode === 'keyword'
+                            ? "Search exact keywords (e.g. 'EBITDA', '99.95%', 'HBM3e', 'GDPR', 'EU AI Act', 'DAI-7')..."
+                            : "Search semantic chunks (e.g. 'financial risk factors', 'percentile score')..."
+                        }
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                       />
@@ -995,14 +1235,16 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
                     </div>
 
                     <div className="search-actions-row">
-                      <select
-                        value={searchDocScope}
-                        onChange={(e) => setSearchDocScope(e.target.value)}
-                        className="search-scope-select"
-                      >
-                        <option value="all">All Documents (DB & Memory)</option>
-                        <option value="current">Current: {activeDoc.name}</option>
-                      </select>
+                      {searchMode !== 'document' && (
+                        <select
+                          value={searchDocScope}
+                          onChange={(e) => setSearchDocScope(e.target.value)}
+                          className="search-scope-select"
+                        >
+                          <option value="all">All Documents (DB & Memory)</option>
+                          <option value="current">Current: {activeDoc.name}</option>
+                        </select>
+                      )}
 
                       <button
                         type="submit"
@@ -1012,51 +1254,64 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
                         {isSearching ? (
                           <>
                             <RefreshCw size={14} className="spin" />
-                            <span>Embedding & Searching...</span>
+                            <span>Retrieving...</span>
                           </>
                         ) : (
                           <>
                             <Sparkles size={14} />
-                            <span>Embed & Retrieve Chunks</span>
+                            <span>
+                              {searchMode === 'document'
+                                ? 'Search Documents'
+                                : searchMode === 'keyword'
+                                ? 'Search Keywords & Chunks'
+                                : searchMode === 'hybrid'
+                                ? 'Run Hybrid Retrieval'
+                                : 'Embed & Retrieve Chunks'}
+                            </span>
                           </>
                         )}
                       </button>
                     </div>
                   </form>
 
-                  {/* Suggested Query Quick Pills */}
+                  {/* Test Keyword Query Quick Pills */}
                   <div className="search-suggested-pills">
-                    <span className="suggested-label">Try:</span>
-                    {activeDoc.suggestedQueries.map((q, idx) => (
+                    <span className="suggested-label">Test Keywords:</span>
+                    {['EBITDA', '99.95% SLA', 'HBM3e', 'EU AI Act', 'Cross-Encoder', 'DAI-7', 'Limitation of Liability', 'GPU compute'].map((kw, idx) => (
                       <button
                         key={idx}
                         className="prompt-pill search-pill"
-                        onClick={() => handleSemanticSearch(q)}
+                        onClick={() => {
+                          setSearchQuery(kw);
+                          handleSemanticSearch(kw);
+                        }}
                       >
-                        {q}
+                        🔍 {kw}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* Vector Query Diagnostics Bar */}
+                {/* Diagnostics Bar */}
                 {searchStats && (
                   <div className="vector-stats-banner">
                     <div className="stats-col">
-                      <span className="stats-tag-title"><Sparkles size={12} /> Model</span>
+                      <span className="stats-tag-title"><Sparkles size={12} /> Mode</span>
+                      <strong style={{ textTransform: 'uppercase' }}>{searchStats.searchMode || searchMode}</strong>
+                    </div>
+                    <div className="stats-col">
+                      <span className="stats-tag-title"><Database size={12} /> Engine / Model</span>
                       <strong>{searchStats.model}</strong>
                     </div>
+                    {searchStats.dimension > 0 && (
+                      <div className="stats-col">
+                        <span className="stats-tag-title"><Database size={12} /> Dimension</span>
+                        <strong>{searchStats.dimension}-D Vector</strong>
+                      </div>
+                    )}
                     <div className="stats-col">
-                      <span className="stats-tag-title"><Database size={12} /> Vector Dimension</span>
-                      <strong>{searchStats.dimension}-D Dense Vector</strong>
-                    </div>
-                    <div className="stats-col">
-                      <span className="stats-tag-title"><Layers size={12} /> Vector Norm</span>
-                      <strong>{searchStats.norm}</strong>
-                    </div>
-                    <div className="stats-col">
-                      <span className="stats-tag-title"><Check size={12} /> Engine</span>
-                      <strong className="text-emerald">{searchStats.source.includes('pgvector') ? 'PostgreSQL pgvector (<=>)' : 'In-Memory Cosine'}</strong>
+                      <span className="stats-tag-title"><Check size={12} /> Source</span>
+                      <strong className="text-emerald">{searchStats.source}</strong>
                     </div>
                     <div className="stats-col">
                       <span className="stats-tag-title">⏱️ Latency</span>
@@ -1065,15 +1320,81 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
                   </div>
                 )}
 
-                {/* Retrieved Chunks Display Viewport */}
+                {/* Retrieved Results Viewport */}
                 <div className="retrieved-chunks-viewport">
                   {isSearching ? (
                     <div className="search-loading-state">
                       <div className="pulse-loader-ring"></div>
-                      <h4>Converting Query to 768-D Vector Embedding...</h4>
-                      <p>Calculating Cosine Similarity across document chunks via PostgreSQL pgvector</p>
+                      <h4>Executing {searchMode.toUpperCase()} Search Query...</h4>
+                      <p>Scanning index for matching chunks with relevance scoring & highlights</p>
+                    </div>
+                  ) : searchMode === 'document' && retrievedDocs.length > 0 ? (
+                    /* DOCUMENT SEARCH RESULTS VIEW */
+                    <div className="chunks-results-list">
+                      <div className="results-header-count">
+                        <span>Found <strong>{retrievedDocs.length}</strong> Document(s) Matching "<em>{searchQuery}</em>":</span>
+                      </div>
+
+                      {retrievedDocs.map((doc, idx) => (
+                        <div key={doc.id || idx} className="retrieved-chunk-card top-match" style={{ marginBottom: '1rem' }}>
+                          <div className="chunk-card-header">
+                            <div className="chunk-badges-left">
+                              <span className="rank-badge rank-gold">
+                                Document #{idx + 1}
+                              </span>
+                              <span className="doc-source-badge">
+                                <FileText size={12} /> {doc.title}
+                              </span>
+                              <span className="page-badge">
+                                {doc.totalPages} Pages • {doc.totalChunks} Chunks
+                              </span>
+                            </div>
+
+                            <div className="similarity-badge-wrap">
+                              <span className="similarity-score-text">
+                                {Math.round(doc.matchScore * 100)}% Match Score
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Matched Keywords in Document */}
+                          {doc.matchedKeywords && doc.matchedKeywords.length > 0 && (
+                            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', padding: '0.4rem 0.8rem 0' }}>
+                              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Matched Terms:</span>
+                              {doc.matchedKeywords.map((kw, kIdx) => (
+                                <span key={kIdx} style={{ fontSize: '0.7rem', padding: '0.1rem 0.4rem', borderRadius: '3px', background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', border: '1px solid rgba(59, 130, 246, 0.3)' }}>
+                                  ✓ {kw}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Nested Matching Chunks */}
+                          {doc.topMatchingChunks && doc.topMatchingChunks.length > 0 && (
+                            <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border-subtle)', padding: '0.6rem 0.8rem' }}>
+                              <span style={{ fontSize: '0.74rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.4rem' }}>
+                                Top Matching Chunks in Document:
+                              </span>
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                                {doc.topMatchingChunks.map((chunk, cIdx) => (
+                                  <div key={chunk.id || cIdx} style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: '4px', padding: '0.5rem' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>
+                                      <span>Chunk #{chunk.id} (Page {chunk.pageNumber || 1})</span>
+                                      <span style={{ color: '#10b981', fontWeight: 600 }}>{chunk.similarityFormatted || `${Math.round(chunk.similarity * 100)}%`}</span>
+                                    </div>
+                                    <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.4 }}>
+                                      {chunk.content}
+                                    </p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   ) : retrievedChunks.length > 0 ? (
+                    /* CHUNK SEARCH RESULTS VIEW */
                     <div className="chunks-results-list">
                       <div className="results-header-count">
                         <span>Top <strong>{retrievedChunks.length}</strong> Relevant Chunks Retrieved for "<em>{searchQuery}</em>":</span>
@@ -1096,6 +1417,11 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
                                 <span className="page-badge">
                                   Page {chunk.pageNumber || 1}
                                 </span>
+                                {chunk.searchMode && (
+                                  <span style={{ fontSize: '0.68rem', padding: '0.1rem 0.35rem', borderRadius: '3px', background: 'var(--bg-tertiary)', color: 'var(--text-muted)', border: '1px solid var(--border-subtle)' }}>
+                                    {chunk.searchMode}
+                                  </span>
+                                )}
                               </div>
 
                               <div className="similarity-badge-wrap">
@@ -1113,6 +1439,36 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
                                 </span>
                               </div>
                             </div>
+
+                            {/* Matched Keywords Tags */}
+                            {chunk.matchedKeywords && chunk.matchedKeywords.length > 0 && (
+                              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', padding: '0.3rem 0.85rem 0' }}>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'inline-flex', alignItems: 'center' }}>
+                                  Matched Terms:
+                                </span>
+                                {chunk.matchedKeywords.map((kw, kIdx) => (
+                                  <span
+                                    key={kIdx}
+                                    style={{
+                                      fontSize: '0.68rem',
+                                      padding: '0.1rem 0.35rem',
+                                      borderRadius: '3px',
+                                      background: 'rgba(16, 185, 129, 0.12)',
+                                      color: '#10b981',
+                                      border: '1px solid rgba(16, 185, 129, 0.25)',
+                                      fontWeight: 500
+                                    }}
+                                  >
+                                    ✓ {kw}
+                                  </span>
+                                ))}
+                                {chunk.matchCount !== undefined && chunk.matchCount > 0 && (
+                                  <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginLeft: '4px' }}>
+                                    ({chunk.matchCount} hit{chunk.matchCount > 1 ? 's' : ''})
+                                  </span>
+                                )}
+                              </div>
+                            )}
 
                             {/* Chunk Text Body */}
                             <div className="chunk-card-body">
@@ -1166,17 +1522,20 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
                       <div className="empty-state-icon">
                         <Search size={32} />
                       </div>
-                      <h3>Ready for Semantic Vector Retrieval</h3>
-                      <p>Type any natural language question or topic above to generate a <strong>768-d Gemini embedding</strong> and retrieve the most relevant chunks via <strong>PostgreSQL pgvector</strong>.</p>
+                      <h3>Ready for Multi-Mode Retrieval</h3>
+                      <p>Type any keyword or natural language query above to retrieve matching chunks via <strong>Keyword Search (BM25)</strong>, <strong>Vector Search (768-d)</strong>, or <strong>Document Search</strong>.</p>
                       
                       <div className="sample-queries-box">
-                        <span className="sample-title">Click a suggested query to test:</span>
+                        <span className="sample-title">Click a suggested test query:</span>
                         <div className="sample-pills-list">
-                          {activeDoc.suggestedQueries.map((q, idx) => (
+                          {['EBITDA', '99.95% SLA', 'HBM3e', 'EU AI Act', 'Cross-Encoder', 'DAI-7'].map((q, idx) => (
                             <button
                               key={idx}
                               className="sample-query-pill"
-                              onClick={() => handleSemanticSearch(q)}
+                              onClick={() => {
+                                setSearchQuery(q);
+                                handleSemanticSearch(q);
+                              }}
                             >
                               <Sparkles size={12} /> {q}
                             </button>
@@ -1808,9 +2167,99 @@ export default function RagStudio({ onShowToast, fileInputRef }: RagStudioProps)
           align-items: center;
           gap: 0.3rem;
         }
+        /* Complete End-to-End RAG Architecture Banner Styles */
+        .pipeline-flow-banner-card {
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-md);
+          background: #faf8f5;
+          padding: 1.1rem 1.4rem;
+          margin-bottom: 1.75rem;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+          transition: all var(--transition-fast);
+        }
+        .flow-card-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 0.85rem;
+        }
+        .flow-title-wrap {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
+        .flow-title-icon {
+          color: #c95151;
+        }
+        .flow-title-text {
+          font-family: var(--font-mono);
+          font-size: 0.78rem;
+          font-weight: 700;
+          letter-spacing: 0.05em;
+          color: #5c6b73;
+        }
+        .flow-status-badge {
+          font-family: var(--font-mono);
+          font-size: 0.72rem;
+          font-weight: 600;
+          padding: 0.2rem 0.6rem;
+          border-radius: var(--radius-xs);
+          background: rgba(0, 0, 0, 0.04);
+          color: var(--text-secondary);
+          border: 1px solid var(--border-subtle);
+        }
+        .pipeline-steps-flow {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+        }
+        .flow-step-pill {
+          padding: 0.38rem 0.85rem;
+          border-radius: var(--radius-xs);
+          font-family: var(--font-mono);
+          font-size: 0.82rem;
+          font-weight: 600;
+          background: #ffffff;
+          color: #2b2d42;
+          border: 1px solid #e5e7eb;
+          box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+          transition: all var(--transition-fast);
+          display: inline-flex;
+          align-items: center;
+          gap: 0.35rem;
+        }
+        .flow-step-pill.permanent-active {
+          background: #111827;
+          color: #ffffff;
+          border-color: #111827;
+        }
+        .flow-step-pill.highlight-embed {
+          background: #fdf2f2;
+          color: #dc2626;
+          border-color: #fecaca;
+        }
+        .flow-step-pill.highlight-retrieve {
+          background: #fdf2f2;
+          color: #dc2626;
+          border-color: #fecaca;
+        }
+        .flow-step-pill.active-step {
+          background: #2563eb !important;
+          color: #ffffff !important;
+          border-color: #1d4ed8 !important;
+          box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
+          transform: translateY(-1px);
+        }
+        .flow-arrow {
+          font-size: 0.85rem;
+          font-weight: 600;
+          color: #9ca3af;
+        }
         @media (max-width: 1024px) {
           .rag-studio-wrapper { grid-template-columns: 1fr; }
           .studio-left { border-right: none; border-bottom: 1px solid var(--border-subtle); }
+          .pipeline-steps-flow { gap: 0.35rem; }
         }
       `}</style>
     </section>

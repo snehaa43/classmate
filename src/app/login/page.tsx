@@ -134,7 +134,7 @@ export default function LoginPage() {
         <div className="login-header-inner">
           <Link href="/" className="brand-link">
             <span className="brand-dot"></span>
-            <span className="brand-name">classmate</span>
+            <span className="brand-name">DocsChat</span>
           </Link>
 
           <div className="header-actions">
@@ -164,11 +164,11 @@ export default function LoginPage() {
               <BookOpen size={20} className="text-emerald" />
             </div>
             <h1 className="card-title">
-              {mode === 'signin' ? 'Sign in to Classmate' : 'Create your account'}
+              {mode === 'signin' ? 'Sign in to DocsChat' : 'Create your account'}
             </h1>
             <p className="card-subtitle">
               {mode === 'signin'
-                ? 'Enter your email and password to access your study documents.'
+                ? 'Enter your email and password to access your documents.'
                 : 'Get started with intelligent PDF parsing and study chunks.'}
             </p>
           </div>

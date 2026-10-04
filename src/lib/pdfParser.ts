@@ -164,6 +164,22 @@ class TemporaryPdfStore {
   public listAllIds(): string[] {
     return Array.from(this.store.keys());
   }
+
+  /**
+   * Action: Get all active documents as an array
+   */
+  public getAll(): TemporaryPdfDocument[] {
+    this.cleanupExpired();
+    return Array.from(this.store.values());
+  }
+
+  /**
+   * Action: Return entries iterator
+   */
+  public entries(): IterableIterator<[string, TemporaryPdfDocument]> {
+    this.cleanupExpired();
+    return this.store.entries();
+  }
 }
 
 // Global Singleton Instance of Temporary In-Memory Store

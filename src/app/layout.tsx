@@ -10,8 +10,8 @@ const plusJakartaSans = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: 'Classmate',
-  description: 'A minimal collaborative learning platform designed to help students and classmates learn, share notes, and study together effortlessly.',
+  title: 'DocsChat',
+  description: 'DocsChat — An AI-powered document intelligence and chat platform to interact with your PDFs effortlessly.',
 };
 
 export default function RootLayout({
